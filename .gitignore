@@ -1,0 +1,27 @@
+# macOS
+.DS_Store
+
+# Go
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+*.test
+*.out
+go.work
+
+# IDEs
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# Build artifacts
+/bin/
+/dist/
+/tmp/
+
+# Dependency directories
+vendor/
