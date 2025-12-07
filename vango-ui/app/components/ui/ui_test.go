@@ -123,16 +123,20 @@ func TestKanban(t *testing.T) {
 	}
 
 	col := board.Children[0]
+
 	// Column structure: Div(Header, Content(Sortable))
 	// Actually implementation is: Div(Header?, Content(Sortable))
-	// Let's inspect properties
 	if col.Props["data-column-id"] != "col-1" {
 		t.Errorf("expected column id col-1, got %v", col.Props["data-column-id"])
 	}
 
 	// Check for sortable hook in column's content div
 	// Column children: H3 (title), Div (content + hook)
+	if len(col.Children) < 2 {
+		t.Fatalf("expected at least 2 children (header + content), got %d", len(col.Children))
+	}
 	contentDiv := col.Children[1] // Index 1 because Header is present
+
 	foundHook := false
 	for k := range contentDiv.Props {
 		if k == "v-hook" {

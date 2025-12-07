@@ -74,7 +74,7 @@ func KanbanColumn(opts ...KanbanColumnOption) *vdom.VNode {
 	})
 
 	// Create data attributes for identification
-	dataID := vdom.Data("column-id", c.ID)
+	dataID := vdom.Attr{Key: "data-column-id", Value: c.ID}
 
 	renderOpts := make([]any, 0, len(c.BaseConfig.Options)+5)
 	renderOpts = append(renderOpts, vdom.Class(finalClass))
@@ -126,7 +126,7 @@ func KanbanCard(opts ...KanbanCardOption) *vdom.VNode {
 		strings.Join(c.BaseConfig.Classes, " "),
 	)
 
-	dataID := vdom.Data("id", c.ID)
+	dataID := vdom.Attr{Key: "data-id", Value: c.ID}
 
 	renderOpts := make([]any, 0, len(c.BaseConfig.Options)+2)
 	renderOpts = append(renderOpts, vdom.Class(finalClass))
