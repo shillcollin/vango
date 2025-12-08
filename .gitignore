@@ -17,6 +17,7 @@ go.work
 *.swp
 *.swo
 *~
+.env
 
 # Build artifacts
 /bin/

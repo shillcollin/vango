@@ -118,7 +118,7 @@ Phase 1: Reactive Core (Signal, Memo, Effect)
                         └── Phase 6: SSR & Hydration
                              └── Phase 7: Routing
                                   └── Phase 8: Higher-Level Features
-                                       └── Phase 9: Developer Experience
+                                       └── Phase 9: Developer Experience [DONE THROUGH HERE]
                                             └── Phase 10: Production Hardening
 ```
 
