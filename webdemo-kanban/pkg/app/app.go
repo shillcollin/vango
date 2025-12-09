@@ -320,10 +320,23 @@ func (r *RootComponent) renderBoard(model *hub.BoardModel) *VNode {
 						// Cards container with Sortable for drag and drop
 						Div(
 							Class("cards-container"),
+							Data("id", col.ID), // Needed for cross-column drag to identify container
 							hooks.Hook("Sortable", map[string]any{
 								"group":      "cards",
 								"animation":  150,
 								"ghostClass": "card-ghost",
+							}),
+							hooks.OnEvent("onreorder", func(e hooks.HookEvent) {
+								cardID := e.String("id")
+								fromCol := e.String("fromContainer")
+								toCol := e.String("toContainer")
+								toIndex := e.Int("toIndex")
+
+								log.Printf("[MoveCard] %s: %s -> %s [%d]", cardID, fromCol, toCol, toIndex)
+
+								if cardID != "" && fromCol != "" && toCol != "" {
+									model.MoveCard(cardID, fromCol, toCol, toIndex)
+								}
 							}),
 							Range(colCards, func(card db.Card, _ int) *VNode {
 								return Div(
