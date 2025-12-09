@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"fmt"
 	"log"
 	"strings"
 	"sync"
@@ -320,7 +321,7 @@ func (r *RootComponent) renderBoard(model *hub.BoardModel) *VNode {
 						// Cards container with Sortable for drag and drop
 						Div(
 							Class("cards-container"),
-							Data("id", col.ID), // Needed for cross-column drag to identify container
+							DataAttr("id", col.ID), // Needed for cross-column drag to identify container
 							hooks.Hook("Sortable", map[string]any{
 								"group":      "cards",
 								"animation":  150,
@@ -342,10 +343,8 @@ func (r *RootComponent) renderBoard(model *hub.BoardModel) *VNode {
 								return Div(
 									Class("card"),
 									Key(card.ID),
-									Data("id", card.ID),
-									Div(Class("card-content"),
-										P(Text(card.Content)),
-									),
+									DataAttr("id", card.ID), // For identification
+									Div(Class("card-content"), Text(card.Content)),
 									Div(Class("card-actions"),
 										Button(
 											Class("btn-icon btn-danger"),
@@ -355,10 +354,19 @@ func (r *RootComponent) renderBoard(model *hub.BoardModel) *VNode {
 									),
 								)
 							}),
+							// Add card button
+							Div(
+								Class("add-card"),
+								Button(
+									Class("btn-ghost btn-sm"),
+									Text("+ Add Card"),
+									OnClick(func() {
+										// Add a new card to this column
+										model.AddCard(col.ID, fmt.Sprintf("New Card in %s", col.Title))
+									}),
+								),
+							),
 						),
-
-						// Add card button
-						r.renderAddCardButton(model, col.ID),
 					)
 				}),
 			),
