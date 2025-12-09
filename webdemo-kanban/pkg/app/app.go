@@ -9,6 +9,7 @@ import (
 	"webdemo-kanban/pkg/db"
 	"webdemo-kanban/pkg/hub"
 
+	"github.com/vango-dev/vango/v2/pkg/features/hooks"
 	"github.com/vango-dev/vango/v2/pkg/server"
 	"github.com/vango-dev/vango/v2/pkg/vango"
 	. "github.com/vango-dev/vango/v2/pkg/vdom"
@@ -316,13 +317,19 @@ func (r *RootComponent) renderBoard(model *hub.BoardModel) *VNode {
 							Span(Class("card-count"), Textf("%d", len(colCards))),
 						),
 
-						// Cards container
+						// Cards container with Sortable for drag and drop
 						Div(
 							Class("cards-container"),
+							hooks.Hook("Sortable", map[string]any{
+								"group":      "cards",
+								"animation":  150,
+								"ghostClass": "card-ghost",
+							}),
 							Range(colCards, func(card db.Card, _ int) *VNode {
 								return Div(
 									Class("card"),
 									Key(card.ID),
+									Data("id", card.ID),
 									Div(Class("card-content"),
 										P(Text(card.Content)),
 									),
