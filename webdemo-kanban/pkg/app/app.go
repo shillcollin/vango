@@ -354,17 +354,17 @@ func (r *RootComponent) renderBoard(model *hub.BoardModel) *VNode {
 									),
 								)
 							}),
-							// Add card button
-							Div(
-								Class("add-card"),
-								Button(
-									Class("btn-ghost btn-sm"),
-									Text("+ Add Card"),
-									OnClick(func() {
-										// Add a new card to this column
-										model.AddCard(col.ID, fmt.Sprintf("New Card in %s", col.Title))
-									}),
-								),
+						),
+						// Add card button
+						Div(
+							Class("add-card"),
+							Button(
+								Class("btn-ghost btn-sm"),
+								Text("+ Add Card"),
+								OnClick(func() {
+									// Add a new card to this column
+									model.AddCard(col.ID, fmt.Sprintf("New Card in %s", col.Title))
+								}),
 							),
 						),
 					)

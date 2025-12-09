@@ -236,3 +236,65 @@ func (r *Root) Render() *VNode {
 1. **Short term**: Use full page navigation in demo to avoid HID issues
 2. **Medium term**: Fix HID sync in framework
 3. **Long term**: Add proper client-side routing support with History API integration
+
+---
+
+## Phase 3: Kanban State & Drag-and-Drop Limitations
+
+During the implementation of drag-and-drop features, we encountered significant issues related to type safety, DOM manipulation conflicts, and API clarity.
+
+### Issue 5: Hook Event Type Mismatch (Silent Failure)
+
+**Severity**: High
+**Status**: **FIXED** (in demo handler)
+
+#### Description
+The framework defined two distinct `HookEvent` types: one in `pkg/features/hooks` (user-facing) and one in `pkg/server` (internal). The `wrapHandler` function in the server runtime only recognized the internal type, causing user-defined handlers using `hooks.HookEvent` to be silently ignored.
+
+#### Symptoms
+- `OnEvent("onreorder", ...)` handler never triggers.
+- No error logs, just silence.
+- Debugging revealed the handler wrapper fell through to a default no-op case.
+
+#### Solution
+Updated `pkg/server/handler.go` to import `pkg/features/hooks` and explicitly handle `func(hooks.HookEvent)`.
+
+#### Recommendation
+- **Unify Types**: The server runtime should use the `hooks` package type definitions, or strictly alias them to prevent type identity issues.
+- **Better Logging**: `wrapHandler` should log a warning when it encounters a handler type it doesn't recognize, rather than silently returning a no-op closure.
+
+### Issue 6: Data Element vs. Data Attribute
+
+**Severity**: Medium (DX confusion)
+**Status**: **FIXED** (usage correction)
+
+#### Description
+The VDOM API has a helper `Data("key", "value")` which creates a `<data value="key">value</data>` HTML element. Developers expecting to create `data-*` attributes (e.g., `data-id="123"`) might mistakenly use `Data()` instead of `DataAttr()`.
+
+#### Symptoms
+- Attributes like `data-id` missing from the target element.
+- JavaScript client (SortableJS) failing to find IDs on elements (`dataset.id` is undefined), falling back to internal HIDs.
+- Business logic failing (e.g., `MoveCard` logic expecting database IDs but receiving HIDs).
+
+#### Recommendation
+- **Rename**: Consider renaming `Data()` to `DataTag()` or `ElementData()` to reduce ambiguity.
+- **Documentation**: Explicitly document `DataAttr()` as the correct helper for "data-*" attributes.
+
+### Issue 7: DOM Interference & Ghost Artifacts
+
+**Severity**: Medium
+**Status**: **FIXED** (layout workaround)
+
+#### Description
+Third-party libraries like `SortableJS` manipulate the DOM directly (moving elements). When a Vango component (like an "Add Card" button) resides inside the sortable container, Sortable treats it as a draggable item. If Vango tries to update the VDOM while Sortable has mutated the real DOM, synchronization is lost, leading to duplicate "ghost" buttons or missing elements.
+
+#### Symptoms
+- "Add Card" button duplicated after a drag operation.
+- Use of internal HIDs mixed with Sortable's DOM manipulation caused Vango to patch the wrong nodes.
+
+#### Solution
+Moved the "Add Card" button **outside** the `.cards-container` managed by SortableJS, preventing the library from interfering with it.
+
+#### Recommendation
+- **Isolation**: Guide developers to isolate interactive/hook-managed zones from static Vango components.
+- **Ignore Directive**: Future frameworks could support a `v-ignore` or `v-static` directive to tell Vango's diff engine to skip certain subtrees managed by external libraries.
