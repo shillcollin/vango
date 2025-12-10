@@ -2,6 +2,8 @@
 
 From building the Collaborative Kanban Board demo application.
 
+> **Status Update (Dec 2024):** Several issues documented here have been resolved in the DX overhaul. Look for ✅ RESOLVED markers. Items marked ⚠️ OUTSTANDING still need work.
+
 ---
 
 ## Summary
@@ -129,7 +131,7 @@ HIDs are **synchronized correctly**. The actual bugs were Issues #1 (session res
 ## Issue 2: Navigate Events Without Router
 
 **Severity**: Medium  
-**Status**: Expected behavior, needs documentation
+**Status**: ✅ **RESOLVED** (NavLink helper + documentation)
 
 ### Description
 When using `<a href="">` tags, the thin client sends `Navigate` events to HID "nav", but without Vango's file-based router configured, there's no handler registered.
@@ -138,12 +140,14 @@ When using `<a href="">` tags, the thin client sends `Navigate` events to HID "n
 - `WARN handler not found ... hid=nav type=Navigate` in logs
 - Links don't navigate
 
-### Workaround
-Use `<button OnClick={...}>` instead of `<a href>` for in-app navigation, manually updating a path Signal.
+### Resolution (Applied)
+- Added `NavLink()` helper in `pkg/vdom/helpers.go` for SPA navigation
+- Documented in `docs/reference/01-elements.md` and `docs/concepts/00-common-pitfalls.md`
 
-### Proposed Fix
-- Document that `<a>` tags require the router package
-- OR: Provide a simple navigation helper that doesn't require full router
+```go
+NavLink("/settings", Text("Settings"))  // SPA navigation
+A(Href("/external"), Text("External"))  // Full page reload
+```
 
 ---
 
@@ -200,18 +204,20 @@ func (r *Root) Render() *VNode {
 
 ### Areas for Improvement
 
-| Area | Issue | Suggestion |
-|------|-------|------------|
-| Developer Experience | Hydration failures are silent | Add dev-mode warnings when HID mismatch detected |
-| Documentation | No guidance on SSR+WS alignment | Add "Common Pitfalls" section |
-| Error Messages | "handler not found" doesn't explain why | Include expected vs actual HID |
-| Tooling | No hydration debugger | Browser devtools extension showing HID mappings |
+| Area | Issue | Status |
+|------|-------|--------|
+| Developer Experience | Hydration failures are silent | ⚠️ Outstanding |
+| Documentation | No guidance on SSR+WS alignment | ✅ Added `00-common-pitfalls.md` |
+| Error Messages | "handler not found" doesn't explain why | ✅ Improved (wrapHandler now logs WARN) |
+| Tooling | No hydration debugger | ⚠️ Outstanding |
 
 ### Missing Features for Production Apps
-1. **URL State Sync** - Browser URL doesn't update during SPA navigation
-2. **Session Persistence** - State lost on page reload
-3. **Auth Integration** - No standard pattern for authenticated sessions
-4. **Error Boundaries** - Panics in handlers crash entire session
+| Feature | Status |
+|---------|--------|
+| URL State Sync | ✅ `NavLink()` helper added |
+| Session Persistence | ⚠️ Outstanding |
+| Auth Integration | ⚠️ Outstanding |
+| Error Boundaries | ⚠️ Outstanding |
 
 ---
 
@@ -246,7 +252,7 @@ During the implementation of drag-and-drop features, we encountered significant 
 ### Issue 5: Hook Event Type Mismatch (Silent Failure)
 
 **Severity**: High
-**Status**: **FIXED** (in demo handler)
+**Status**: ✅ **RESOLVED** (framework + improved logging)
 
 #### Description
 The framework defined two distinct `HookEvent` types: one in `pkg/features/hooks` (user-facing) and one in `pkg/server` (internal). The `wrapHandler` function in the server runtime only recognized the internal type, causing user-defined handlers using `hooks.HookEvent` to be silently ignored.
@@ -256,29 +262,39 @@ The framework defined two distinct `HookEvent` types: one in `pkg/features/hooks
 - No error logs, just silence.
 - Debugging revealed the handler wrapper fell through to a default no-op case.
 
-#### Solution
-Updated `pkg/server/handler.go` to import `pkg/features/hooks` and explicitly handle `func(hooks.HookEvent)`.
-
-#### Recommendation
-- **Unify Types**: The server runtime should use the `hooks` package type definitions, or strictly alias them to prevent type identity issues.
-- **Better Logging**: `wrapHandler` should log a warning when it encounters a handler type it doesn't recognize, rather than silently returning a no-op closure.
+#### Resolution (Applied)
+1. `pkg/server/handler.go` already handles both `hooks.HookEvent` and `server.HookEvent`
+2. Unknown handler types now log a WARN with supported types list:
+   ```
+   [WARN] wrapHandler: Unrecognized handler type func(main.CustomEvent). 
+   Handler will NOT be called. Supported types: func(), func(*Event), 
+   func(string), func(hooks.HookEvent), func(FormData), etc.
+   ```
+3. Documented in `docs/concepts/00-common-pitfalls.md`
 
 ### Issue 6: Data Element vs. Data Attribute
 
 **Severity**: Medium (DX confusion)
-**Status**: **FIXED** (usage correction)
+**Status**: **RESOLVED** (API renamed in framework)
 
 #### Description
-The VDOM API has a helper `Data("key", "value")` which creates a `<data value="key">value</data>` HTML element. Developers expecting to create `data-*` attributes (e.g., `data-id="123"`) might mistakenly use `Data()` instead of `DataAttr()`.
+The VDOM API had a helper `Data("key", "value")` which created a `<data value="key">value</data>` HTML element. Developers expecting to create `data-*` attributes (e.g., `data-id="123"`) mistakenly used `Data()` instead of `DataAttr()`.
 
 #### Symptoms
 - Attributes like `data-id` missing from the target element.
 - JavaScript client (SortableJS) failing to find IDs on elements (`dataset.id` is undefined), falling back to internal HIDs.
 - Business logic failing (e.g., `MoveCard` logic expecting database IDs but receiving HIDs).
 
-#### Recommendation
-- **Rename**: Consider renaming `Data()` to `DataTag()` or `ElementData()` to reduce ambiguity.
-- **Documentation**: Explicitly document `DataAttr()` as the correct helper for "data-*" attributes.
+#### Resolution (Applied)
+The framework API was updated:
+- **`Data(key, value)`** now creates `data-*` attributes (what developers expect)
+- **`DataElement()`** creates the rare `<data>` HTML element
+- Documentation updated in `docs/reference/01-elements.md` and new `docs/concepts/00-common-pitfalls.md`
+
+```go
+Data("id", "123")           // → data-id="123" (attribute)
+DataElement(Value("code"))  // → <data value="code"> (element)
+```
 
 ### Issue 7: DOM Interference & Ghost Artifacts
 
@@ -298,3 +314,78 @@ Moved the "Add Card" button **outside** the `.cards-container` managed by Sortab
 #### Recommendation
 - **Isolation**: Guide developers to isolate interactive/hook-managed zones from static Vango components.
 - **Ignore Directive**: Future frameworks could support a `v-ignore` or `v-static` directive to tell Vango's diff engine to skip certain subtrees managed by external libraries.
+
+
+----- NEW CODING SESSION CONTINUING THE KANBAN DEMO -----
+
+### Issue 8: Eager Evaluation in VDOM Helpers Causes Nil Pointer Panics
+
+**Severity**: High  
+**Status**: ✅ **RESOLVED** (When/IfLazy/ShowWhen helpers + documentation)
+
+#### Description
+VDOM helpers like `If()`, `ClassIf()`, `Style()`, etc. are regular Go functions. Go evaluates **all function arguments before calling the function**, which means code inside an `If()` block executes even when the condition is false.
+
+#### Symptoms
+```go
+// PANIC: card.DueDate is nil, but .Before() is called anyway!
+If(card.DueDate != nil,
+    Span(
+        ClassIf(card.DueDate.Before(now()), "overdue"),  // ← Evaluated BEFORE If() runs
+        Text(card.DueDate.Format("Jan 2")),              // ← Also panics
+    ),
+)
+```
+
+The developer expects the inner content to only evaluate when `card.DueDate != nil`, but Go's evaluation order means `card.DueDate.Before()` is called unconditionally, causing a nil pointer panic.
+
+#### Root Cause
+This is Go's semantics, not a Vango bug. However, the declarative VDOM API creates an expectation of lazy evaluation that Go doesn't provide.
+
+#### Current Workaround
+Precompute all values that depend on nullable pointers **before** the VNode construction:
+
+```go
+// ✅ CORRECT: Precompute outside VNode
+hasDueDate := card.DueDate != nil
+isOverdue := hasDueDate && card.DueDate.Before(now())
+dueDateStr := ""
+if hasDueDate {
+    dueDateStr = card.DueDate.Format("Jan 2")
+}
+
+return Div(
+    If(hasDueDate,
+        Span(ClassIf(isOverdue, "overdue"), Text(dueDateStr)),
+    ),
+)
+```
+
+#### Proposed DX Improvements
+
+1. **Document in Common Pitfalls** (minimum) - Add to `00-common-pitfalls.md`
+
+2. **Add Lazy Evaluation Helper** (recommended):
+   ```go
+   // IfFunc only evaluates the node function when condition is true
+   func IfFunc(condition bool, nodeFunc func() *VNode) *VNode {
+       if condition {
+           return nodeFunc()
+       }
+       return nil
+   }
+   
+   // Usage - the inner func() is only called when DueDate != nil
+   IfFunc(card.DueDate != nil, func() *VNode {
+       return Span(ClassIf(card.DueDate.Before(now()), "overdue"))
+   })
+   ```
+
+3. **Better Panic Recovery** (nice to have):
+   - Wrap `ComponentInstance.Render()` in `recover()`
+   - Log which component and approximate line caused the panic
+   - Return an error VNode instead of crashing the session
+
+#### Recommendation
+- **Immediate**: Document this in `00-common-pitfalls.md` under "Nullable Pointer Access in If()"
+- **Future**: Add `IfFunc()` lazy variant to `pkg/vdom/helpers.go`

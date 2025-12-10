@@ -6,6 +6,7 @@ import (
 	"log"
 	"strings"
 	"sync"
+	"time"
 
 	"webdemo-kanban/pkg/db"
 	"webdemo-kanban/pkg/hub"
@@ -312,16 +313,24 @@ func (r *RootComponent) renderBoard(model *hub.BoardModel) *VNode {
 						Class("column"),
 						Key(col.ID),
 
-						// Column header
+						// Column header with actions
 						Div(Class("column-header"),
 							H3(Text(col.Title)),
-							Span(Class("card-count"), Textf("%d", len(colCards))),
+							Div(Class("column-header-actions"),
+								Span(Class("card-count"), Textf("%d", len(colCards))),
+								Button(
+									Class("btn-icon btn-ghost btn-sm"),
+									OnClick(func() { model.DeleteColumn(col.ID) }),
+									Title("Delete column"),
+									Text("×"),
+								),
+							),
 						),
 
 						// Cards container with Sortable for drag and drop
 						Div(
 							Class("cards-container"),
-							DataAttr("id", col.ID), // Needed for cross-column drag to identify container
+							DataAttr("id", col.ID),
 							hooks.Hook("Sortable", map[string]any{
 								"group":      "cards",
 								"animation":  150,
@@ -340,11 +349,63 @@ func (r *RootComponent) renderBoard(model *hub.BoardModel) *VNode {
 								}
 							}),
 							Range(colCards, func(card db.Card, _ int) *VNode {
+								// Use title if available, fallback to content
+								title := card.Title
+								if title == "" {
+									title = card.Content
+								}
+
+								// PATTERN: Use When() for nullable pointer access
+								// Go evaluates all If() arguments before calling the function,
+								// so dereferencing a nil pointer inside If() causes a panic.
+								// When() uses lazy evaluation - the function only runs if condition is true.
+								//
+								// Alternative approach (precompute values):
+								// hasCoverColor := card.CoverColor != nil && *card.CoverColor != ""
+								// coverColorStyle := ""
+								// if hasCoverColor {
+								//     coverColorStyle = fmt.Sprintf("background-color: %s", *card.CoverColor)
+								// }
+								// ... then use If(hasCoverColor, Div(Style(coverColorStyle)))
+
 								return Div(
 									Class("card"),
 									Key(card.ID),
-									DataAttr("id", card.ID), // For identification
-									Div(Class("card-content"), Text(card.Content)),
+									DataAttr("id", card.ID),
+
+									// Card cover color (When = lazy evaluation, safe with nil pointers)
+									When(card.CoverColor != nil && *card.CoverColor != "", func() *VNode {
+										return Div(Class("card-cover"), Style(fmt.Sprintf("background-color: %s", *card.CoverColor)))
+									}),
+
+									// Card labels (If is fine here - len() is safe on nil slices)
+									If(len(card.Labels) > 0,
+										Div(Class("card-labels"),
+											Range(card.Labels, func(l db.Label, _ int) *VNode {
+												return Span(
+													Class("card-label"),
+													Style(fmt.Sprintf("background-color: var(--%s, %s)", l.Color, l.Color)),
+													Title(l.Name),
+												)
+											}),
+										),
+									),
+
+									// Card title
+									Div(Class("card-title"), Text(title)),
+
+									// Card metadata row
+									Div(Class("card-meta"),
+										// Due date badge (When = lazy evaluation for nil DueDate)
+										When(card.DueDate != nil, func() *VNode {
+											return Span(
+												Class("due-date"),
+												ClassIf(card.DueDate.Before(now()), "overdue"),
+												Text("📅 "+card.DueDate.Format("Jan 2")),
+											)
+										}),
+									),
+									// Card actions
 									Div(Class("card-actions"),
 										Button(
 											Class("btn-icon btn-danger"),
@@ -362,25 +423,30 @@ func (r *RootComponent) renderBoard(model *hub.BoardModel) *VNode {
 								Class("btn-ghost btn-sm"),
 								Text("+ Add Card"),
 								OnClick(func() {
-									// Add a new card to this column
-									model.AddCard(col.ID, fmt.Sprintf("New Card in %s", col.Title))
+									model.AddCard(col.ID, "New Card")
 								}),
 							),
 						),
 					)
 				}),
+
+				// Add column button (at the end)
+				Div(
+					Class("column add-column-placeholder"),
+					Button(
+						Class("btn btn-ghost add-column-btn"),
+						OnClick(func() {
+							model.AddColumn("New Column")
+						}),
+						Text("+ Add Column"),
+					),
+				),
 			),
 		),
 	)
 }
 
-func (r *RootComponent) renderAddCardButton(model *hub.BoardModel, columnID string) *VNode {
-	// Simple add card - in production you'd have inline form
-	return Button(
-		Class("add-card-btn"),
-		OnClick(func() {
-			model.AddCard(columnID, "New card")
-		}),
-		Text("+ Add card"),
-	)
+// now returns the current time for due date comparison
+func now() time.Time {
+	return time.Now()
 }

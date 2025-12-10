@@ -14,19 +14,19 @@
   --accent-success: #3fb950;
   --accent-warning: #d29922;
   --accent-danger: #f85149;
-  
+
   /* Spacing */
   --spacing-xs: 4px;
   --spacing-sm: 8px;
   --spacing-md: 16px;
   --spacing-lg: 24px;
   --spacing-xl: 32px;
-  
+
   /* Border radius */
   --radius-sm: 6px;
   --radius-md: 8px;
   --radius-lg: 12px;
-  
+
   /* Shadows */
   --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.3);
   --shadow-md: 0 4px 12px rgba(0, 0, 0, 0.4);
@@ -433,7 +433,9 @@ textarea.input {
 }
 
 @keyframes spin {
-  to { transform: rotate(360deg); }
+  to {
+    transform: rotate(360deg);
+  }
 }
 
 /* Error Banner */
@@ -447,4 +449,111 @@ textarea.input {
   padding: var(--spacing-sm) var(--spacing-md);
   margin-bottom: var(--spacing-md);
   color: var(--accent-danger);
+}
+
+/* Label Colors */
+:root {
+  --red: #f85149;
+  --orange: #d29922;
+  --yellow: #f0e68c;
+  --green: #3fb950;
+  --blue: #58a6ff;
+  --purple: #a371f7;
+}
+
+/* Card Enhancements */
+.card-cover {
+  height: 32px;
+  margin: calc(-1 * var(--spacing-md));
+  margin-bottom: var(--spacing-sm);
+  border-radius: var(--radius-sm) var(--radius-sm) 0 0;
+}
+
+.card-labels {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin-bottom: var(--spacing-sm);
+}
+
+.card-label {
+  width: 40px;
+  height: 8px;
+  border-radius: 4px;
+}
+
+.card-title {
+  font-size: 0.875rem;
+  color: var(--text-primary);
+  word-wrap: break-word;
+  line-height: 1.4;
+}
+
+.card-meta {
+  display: flex;
+  gap: var(--spacing-sm);
+  margin-top: var(--spacing-sm);
+  flex-wrap: wrap;
+}
+
+.due-date {
+  font-size: 0.75rem;
+  color: var(--text-muted);
+  background: var(--bg-tertiary);
+  padding: 2px 6px;
+  border-radius: var(--radius-sm);
+}
+
+.due-date.overdue {
+  background: rgba(248, 81, 73, 0.15);
+  color: var(--accent-danger);
+}
+
+/* Column Header Actions */
+.column-header-actions {
+  display: flex;
+  align-items: center;
+  gap: var(--spacing-xs);
+}
+
+.column-header-actions .btn-icon {
+  opacity: 0;
+  transition: opacity 0.2s;
+}
+
+.column:hover .column-header-actions .btn-icon {
+  opacity: 1;
+}
+
+/* Add Column Placeholder */
+.add-column-placeholder {
+  background: transparent;
+  border: 2px dashed var(--border-color);
+  min-height: 200px;
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+  padding-top: var(--spacing-lg);
+}
+
+.add-column-btn {
+  color: var(--text-muted);
+}
+
+.add-column-placeholder:hover {
+  border-color: var(--accent-primary);
+}
+
+.add-column-placeholder:hover .add-column-btn {
+  color: var(--accent-primary);
+}
+
+/* Add Card Button in Column */
+.add-card {
+  padding: var(--spacing-sm);
+}
+
+.add-card .btn-ghost {
+  width: 100%;
+  justify-content: flex-start;
 }
