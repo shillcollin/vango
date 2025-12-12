@@ -31,10 +31,10 @@ Phase 3 implements the core application management features. Users can create ap
 
 ```
 ┌─────────────────────────────────────────────────────────────────────────┐
-│                      APP MANAGEMENT FLOW                                 │
+│                      APP MANAGEMENT FLOW                                │
 ├─────────────────────────────────────────────────────────────────────────┤
-│                                                                          │
-│  CREATE APP                                                              │
+│                                                                         │
+│  CREATE APP                                                             │
 │  ┌─────────────────────────────────────────────────────────────────────┐│
 │  │ User clicks "New App"                                               ││
 │  │        │                                                            ││
@@ -53,8 +53,8 @@ Phase 3 implements the core application management features. Users can create ap
 │  │        ▼                                                            ││
 │  │ Redirect to app dashboard                                           ││
 │  └─────────────────────────────────────────────────────────────────────┘│
-│                                                                          │
-│  APP ENTITY                                                              │
+│                                                                         │
+│  APP ENTITY                                                             │
 │  ┌─────────────────────────────────────────────────────────────────────┐│
 │  │                                                                      ││
 │  │  App                                                                 ││

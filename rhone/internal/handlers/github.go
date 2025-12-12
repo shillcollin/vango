@@ -9,18 +9,10 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgtype"
 
-	"github.com/vangoframework/rhone/internal/auth"
 	"github.com/vangoframework/rhone/internal/database/queries"
 	"github.com/vangoframework/rhone/internal/middleware"
 	"github.com/vangoframework/rhone/internal/templates/components"
 )
-
-// RepoWithInstallation combines repository info with its installation context.
-type RepoWithInstallation struct {
-	auth.Repository
-	InstallationID int64
-	AccountLogin   string
-}
 
 // ConnectGitHub redirects to GitHub App installation page.
 func (h *Handlers) ConnectGitHub(w http.ResponseWriter, r *http.Request) {
@@ -192,7 +184,7 @@ func (h *Handlers) SearchRepositories(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Collect and filter repos from all installations
-	var allRepos []RepoWithInstallation
+	var allRepos []components.RepoView
 	for _, inst := range installations {
 		if inst.SuspendedAt.Valid {
 			continue // Skip suspended installations
@@ -216,10 +208,12 @@ func (h *Handlers) SearchRepositories(w http.ResponseWriter, r *http.Request) {
 				}
 			}
 
-			allRepos = append(allRepos, RepoWithInstallation{
-				Repository:     repo,
+			allRepos = append(allRepos, components.RepoView{
+				FullName:       repo.FullName,
+				Description:    repo.Description,
+				Private:        repo.Private,
+				DefaultBranch:  repo.DefaultBranch,
 				InstallationID: inst.InstallationID,
-				AccountLogin:   inst.AccountLogin,
 			})
 		}
 	}

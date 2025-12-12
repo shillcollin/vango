@@ -55,8 +55,14 @@ func main() {
 		cfg.GitHubCallbackURL,
 	)
 
+	// GitHub App
+	githubApp, err := auth.NewGitHubApp(cfg.GitHubAppID, cfg.GitHubAppPrivateKey)
+	if err != nil {
+		log.Fatalf("failed to initialize github app: %v", err)
+	}
+
 	// Handlers
-	h := handlers.New(cfg, db, sessions, github, logger)
+	h := handlers.New(cfg, db, sessions, github, githubApp, logger)
 
 	// Router
 	r := chi.NewRouter()
@@ -88,6 +94,10 @@ func main() {
 	r.Get("/auth/callback", h.AuthCallback)
 	r.Get("/logout", h.Logout)
 
+	// GitHub App routes (need session but use state cookie for auth)
+	r.Get("/github/connect", h.ConnectGitHub)
+	r.Get("/github/callback", h.GitHubCallback)
+
 	// Protected routes
 	r.Group(func(r chi.Router) {
 		r.Use(middleware.RequireAuth)
@@ -95,6 +105,11 @@ func main() {
 		r.Get("/apps", h.ListApps)
 		r.Get("/apps/new", h.NewApp)
 		r.Get("/settings", h.Settings)
+
+		// Repository API
+		r.Get("/api/repos", h.ListRepositories)
+		r.Get("/api/repos/search", h.SearchRepositories)
+		r.Get("/api/repos/selector", h.RepoSelector)
 	})
 
 	// Server
