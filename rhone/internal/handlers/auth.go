@@ -6,6 +6,9 @@ import (
 	"encoding/hex"
 	"net/http"
 
+	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5/pgtype"
+
 	"github.com/vangoframework/rhone/internal/auth"
 	"github.com/vangoframework/rhone/internal/database/queries"
 	"github.com/vangoframework/rhone/internal/templates/pages"
@@ -91,8 +94,8 @@ func (h *Handlers) AuthCallback(w http.ResponseWriter, r *http.Request) {
 	user, err := h.queries.UpsertUser(ctx, queries.UpsertUserParams{
 		GithubID:       githubUser.ID,
 		GithubUsername: githubUser.Login,
-		Email:          toNullString(githubUser.Email),
-		AvatarUrl:      toNullString(githubUser.AvatarURL),
+		Email:          toPgText(githubUser.Email),
+		AvatarUrl:      toPgText(githubUser.AvatarURL),
 	})
 	if err != nil {
 		h.logger.Error("failed to upsert user", "error", err)
@@ -110,11 +113,11 @@ func (h *Handlers) AuthCallback(w http.ResponseWriter, r *http.Request) {
 
 	// Create session
 	session := &auth.SessionData{
-		UserID:    user.ID,
-		Email:     nullStringValue(user.Email),
+		UserID:    pgUUIDToUUID(user.ID),
+		Email:     pgTextToString(user.Email),
 		Username:  user.GithubUsername,
-		AvatarURL: nullStringValue(user.AvatarUrl),
-		TeamID:    team.ID,
+		AvatarURL: pgTextToString(user.AvatarUrl),
+		TeamID:    pgUUIDToUUID(team.ID),
 		TeamSlug:  team.Slug,
 	}
 
@@ -176,18 +179,26 @@ func generateState() string {
 	return hex.EncodeToString(b)
 }
 
-// toNullString converts a string to a nullable string pointer.
-func toNullString(s string) *string {
+// toPgText converts a string to pgtype.Text.
+func toPgText(s string) pgtype.Text {
 	if s == "" {
-		return nil
+		return pgtype.Text{Valid: false}
 	}
-	return &s
+	return pgtype.Text{String: s, Valid: true}
 }
 
-// nullStringValue extracts the value from a nullable string pointer.
-func nullStringValue(s *string) string {
-	if s == nil {
+// pgTextToString converts pgtype.Text to a string.
+func pgTextToString(t pgtype.Text) string {
+	if !t.Valid {
 		return ""
 	}
-	return *s
+	return t.String
+}
+
+// pgUUIDToUUID converts pgtype.UUID to uuid.UUID.
+func pgUUIDToUUID(p pgtype.UUID) uuid.UUID {
+	if !p.Valid {
+		return uuid.UUID{}
+	}
+	return uuid.UUID(p.Bytes)
 }
