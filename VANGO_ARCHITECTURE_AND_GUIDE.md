@@ -5166,7 +5166,20 @@ For horizontal scaling:
 
 ## 14. Security
 
+Vango provides **security by design** with secure defaults that protect against common vulnerabilities.
+
+### 14.0 Secure Defaults (v2.1+)
+
+| Setting | Default | Notes |
+|---------|---------|-------|
+| `CheckOrigin` | Same-origin only | Cross-origin WS rejected |
+| CSRF | Warning if disabled | Required in v3.0 |
+| `on*` attributes | Stripped unless handler | Prevents XSS injection |
+| Protocol limits | 4MB max allocation | Prevents DoS |
+
 ### 14.1 XSS Prevention
+
+#### Text Escaping
 
 All text content is escaped by default:
 
@@ -5178,28 +5191,61 @@ Div(Text(userInput))  // <script> becomes &lt;script&gt;
 Div(DangerouslySetInnerHTML(trustedHTML))
 ```
 
-### 14.2 CSRF Protection
+#### Attribute Sanitization
 
-WebSocket handshake validates CSRF token:
+Event handler attributes (`onclick`, `onmouseover`, etc.) are automatically filtered:
 
 ```go
-// Automatic in VangoScripts()
-<script>
-    window.__VANGO_CSRF__ = "{{ .CSRFToken }}";
-</script>
+// This is BLOCKED - attribute stripped during render
+Attr("onclick", "alert(1)")
+
+// This is SAFE - uses internal event handler
+OnClick(myHandler)
 ```
 
-The thin client sends this token on connection:
+> **Note**: The filter is case-insensitive. `ONCLICK`, `onClick`, and `onclick` are all blocked.
 
-```javascript
-ws.send(JSON.stringify({
-    type: 'HANDSHAKE',
-    csrf: window.__VANGO_CSRF__,
-    session: getCookie('vango_session')
-}));
+### 14.2 CSRF Protection
+
+Enable CSRF protection in production:
+
+```go
+vango.Config{
+    CSRFSecret: []byte("your-32-byte-secret-key-here!!"),
+}
 ```
 
-### 14.3 Session Security
+CSRF uses the **Double Submit Cookie** pattern:
+1. Server sets `__vango_csrf` cookie via `server.SetCSRFCookie()`
+2. Server embeds token in HTML as `window.__VANGO_CSRF__`
+3. Client sends token in WebSocket handshake
+4. Server validates handshake token matches cookie
+
+```go
+// In your page handler
+func ServePage(w http.ResponseWriter, r *http.Request) {
+    token := server.GenerateCSRFToken()
+    server.SetCSRFCookie(w, token)
+    // Embed token in page for client
+}
+```
+
+> **Warning**: If `CSRFSecret` is nil, a warning is logged on startup. This will become a hard error in v3.0.
+
+### 14.3 WebSocket Origin Validation
+
+By default, Vango rejects cross-origin WebSocket connections (prevents CSWSH):
+
+```go
+// Default behavior - same-origin only
+config := server.DefaultServerConfig()
+// config.CheckOrigin = SameOriginCheck (secure default)
+
+// Explicit cross-origin (dev only!)
+config.CheckOrigin = func(r *http.Request) bool { return true }
+```
+
+### 14.4 Session Security
 
 ```go
 vango.Config{
@@ -5209,11 +5255,20 @@ vango.Config{
         Secure:   true,
         SameSite: http.SameSiteStrictMode,
     },
-    SessionEncryption: true,  // Encrypt session data
 }
 ```
 
-### 14.4 Event Handler Safety
+### 14.5 Protocol Security
+
+The binary protocol includes allocation limits to prevent DoS attacks:
+
+| Limit | Value | Purpose |
+|-------|-------|---------|
+| Max string/bytes | 4MB | Prevent OOM |
+| Max collection | 100K items | Prevent CPU exhaustion |
+| Hard cap | 16MB | Absolute ceiling |
+
+### 14.6 Event Handler Safety
 
 Handlers are server-side function references, not code strings:
 
@@ -5224,10 +5279,10 @@ Button(OnClick(func() {
 }))
 ```
 
-The client only sends `{hid: "h42"}`. It cannot:
+The client only sends `{hid: "h42", type: 0x01}`. It cannot:
 - Execute arbitrary functions
 - Access handlers from other sessions
-- Modify handler behavior
+- Inject JavaScript
 
 ### 14.5 Input Validation
 

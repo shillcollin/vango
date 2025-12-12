@@ -1,0 +1,49 @@
+package pages
+
+import (
+	"github.com/vangoframework/rhone/internal/auth"
+	"github.com/vangoframework/rhone/internal/templates/layouts"
+	"github.com/vangoframework/rhone/internal/templates/components"
+)
+
+templ Dashboard(session *auth.SessionData) {
+	@layouts.Base("Dashboard") {
+		@components.Nav(session)
+		<main class="py-10">
+			<div class="mx-auto max-w-7xl px-4 sm:px-6 lg:px-8">
+				<div class="sm:flex sm:items-center">
+					<div class="sm:flex-auto">
+						<h1 class="text-2xl font-semibold text-gray-900">
+							Welcome, { session.Username }
+						</h1>
+						<p class="mt-2 text-sm text-gray-700">
+							Your Vango applications will appear here.
+						</p>
+					</div>
+					<div class="mt-4 sm:ml-16 sm:mt-0 sm:flex-none">
+						<a href="/apps/new" class="block rounded-md bg-indigo-600 px-3 py-2 text-center text-sm font-semibold text-white shadow-sm hover:bg-indigo-500">
+							New App
+						</a>
+					</div>
+				</div>
+
+				<!-- Empty state -->
+				<div class="mt-10 text-center">
+					<svg class="mx-auto h-12 w-12 text-gray-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+						<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 11H5m14 0a2 2 0 012 2v6a2 2 0 01-2 2H5a2 2 0 01-2-2v-6a2 2 0 012-2m14 0V9a2 2 0 00-2-2M5 11V9a2 2 0 012-2m0 0V5a2 2 0 012-2h6a2 2 0 012 2v2M7 7h10"/>
+					</svg>
+					<h3 class="mt-2 text-sm font-semibold text-gray-900">No apps</h3>
+					<p class="mt-1 text-sm text-gray-500">Get started by creating a new app.</p>
+					<div class="mt-6">
+						<a href="/apps/new" class="inline-flex items-center rounded-md bg-indigo-600 px-3 py-2 text-sm font-semibold text-white shadow-sm hover:bg-indigo-500">
+							<svg class="-ml-0.5 mr-1.5 h-5 w-5" viewBox="0 0 20 20" fill="currentColor">
+								<path d="M10.75 4.75a.75.75 0 00-1.5 0v4.5h-4.5a.75.75 0 000 1.5h4.5v4.5a.75.75 0 001.5 0v-4.5h4.5a.75.75 0 000-1.5h-4.5v-4.5z"/>
+							</svg>
+							New App
+						</a>
+					</div>
+				</div>
+			</div>
+		</main>
+	}
+}

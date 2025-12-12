@@ -1,0 +1,40 @@
+package components
+
+import "github.com/vangoframework/rhone/internal/auth"
+
+templ Nav(session *auth.SessionData) {
+	<nav class="bg-white shadow-sm">
+		<div class="mx-auto max-w-7xl px-4 sm:px-6 lg:px-8">
+			<div class="flex h-16 justify-between">
+				<div class="flex">
+					<div class="flex flex-shrink-0 items-center">
+						<a href="/" class="text-xl font-bold text-indigo-600">Rhone</a>
+					</div>
+					if session != nil {
+						<div class="hidden sm:ml-6 sm:flex sm:space-x-8">
+							<a href="/apps" class="inline-flex items-center border-b-2 border-transparent px-1 pt-1 text-sm font-medium text-gray-500 hover:border-gray-300 hover:text-gray-700">
+								Apps
+							</a>
+							<a href="/settings" class="inline-flex items-center border-b-2 border-transparent px-1 pt-1 text-sm font-medium text-gray-500 hover:border-gray-300 hover:text-gray-700">
+								Settings
+							</a>
+						</div>
+					}
+				</div>
+				<div class="flex items-center">
+					if session != nil {
+						<div class="flex items-center space-x-4">
+							<span class="text-sm text-gray-500">{ session.TeamSlug }</span>
+							<img class="h-8 w-8 rounded-full" src={ session.AvatarURL } alt={ session.Username }/>
+							<a href="/logout" class="text-sm text-gray-500 hover:text-gray-700">Logout</a>
+						</div>
+					} else {
+						<a href="/login" class="rounded-md bg-indigo-600 px-3 py-2 text-sm font-semibold text-white shadow-sm hover:bg-indigo-500">
+							Sign in with GitHub
+						</a>
+					}
+				</div>
+			</div>
+		</div>
+	</nav>
+}

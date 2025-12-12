@@ -1,0 +1,11 @@
+package components
+
+templ Flash(flashType string, message string) {
+	if message != "" {
+		<div class={ "rounded-md p-4 mb-4", templ.KV("bg-green-50", flashType == "success"), templ.KV("bg-red-50", flashType == "error"), templ.KV("bg-yellow-50", flashType == "warning") }>
+			<p class={ "text-sm font-medium", templ.KV("text-green-800", flashType == "success"), templ.KV("text-red-800", flashType == "error"), templ.KV("text-yellow-800", flashType == "warning") }>
+				{ message }
+			</p>
+		</div>
+	}
+}
