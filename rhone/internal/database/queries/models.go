@@ -8,6 +8,18 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
+type GithubInstallation struct {
+	ID             pgtype.UUID        `db:"id" json:"id"`
+	TeamID         pgtype.UUID        `db:"team_id" json:"team_id"`
+	InstallationID int64              `db:"installation_id" json:"installation_id"`
+	AccountType    string             `db:"account_type" json:"account_type"`
+	AccountLogin   string             `db:"account_login" json:"account_login"`
+	AccountID      int64              `db:"account_id" json:"account_id"`
+	SuspendedAt    pgtype.Timestamptz `db:"suspended_at" json:"suspended_at"`
+	CreatedAt      pgtype.Timestamptz `db:"created_at" json:"created_at"`
+	UpdatedAt      pgtype.Timestamptz `db:"updated_at" json:"updated_at"`
+}
+
 type Team struct {
 	ID                   pgtype.UUID        `db:"id" json:"id"`
 	Name                 string             `db:"name" json:"name"`

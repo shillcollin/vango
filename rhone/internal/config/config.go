@@ -3,6 +3,7 @@ package config
 import (
 	"fmt"
 	"os"
+	"strconv"
 	"time"
 
 	"github.com/joho/godotenv"
@@ -18,10 +19,15 @@ type Config struct {
 	// Database
 	DatabaseURL string
 
-	// GitHub OAuth
+	// GitHub OAuth (user authentication)
 	GitHubClientID     string
 	GitHubClientSecret string
 	GitHubCallbackURL  string
+
+	// GitHub App (repository access)
+	GitHubAppID         int64
+	GitHubAppPrivateKey string
+	GitHubAppSlug       string
 
 	// Session
 	SessionSecret string
@@ -47,6 +53,9 @@ func Load() (*Config, error) {
 		GitHubClientID:     mustGetEnv("GITHUB_CLIENT_ID"),
 		GitHubClientSecret: mustGetEnv("GITHUB_CLIENT_SECRET"),
 
+		GitHubAppPrivateKey: mustGetEnv("GITHUB_APP_PRIVATE_KEY"),
+		GitHubAppSlug:       mustGetEnv("GITHUB_APP_SLUG"),
+
 		SessionSecret: mustGetEnv("SESSION_SECRET"),
 		SessionMaxAge: 7 * 24 * time.Hour, // 1 week
 
@@ -54,6 +63,14 @@ func Load() (*Config, error) {
 	}
 
 	cfg.GitHubCallbackURL = cfg.BaseURL + "/auth/callback"
+
+	// Parse GitHub App ID
+	appIDStr := mustGetEnv("GITHUB_APP_ID")
+	appID, err := strconv.ParseInt(appIDStr, 10, 64)
+	if err != nil {
+		return nil, fmt.Errorf("GITHUB_APP_ID must be a valid integer: %w", err)
+	}
+	cfg.GitHubAppID = appID
 
 	// Validate session secret length (need 64 bytes for hash key + block key)
 	if len(cfg.SessionSecret) < 64 {
