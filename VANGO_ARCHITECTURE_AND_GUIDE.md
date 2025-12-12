@@ -32,10 +32,13 @@ status: RFC
 9. [Routing & Navigation](#9-routing--navigation)
 10. [Data & APIs](#10-data--apis)
 11. [Forms & Validation](#11-forms--validation)
+   - [11.4 Toast Notifications](#114-toast-notifications)
+   - [11.5 File Uploads](#115-file-uploads)
 12. [JavaScript Islands](#12-javascript-islands)
 13. [Styling](#13-styling)
 14. [Performance & Scaling](#14-performance--scaling)
 15. [Security](#15-security)
+   - [14.6 Authentication & Middleware](#146-authentication--middleware)
 16. [Testing](#16-testing)
 17. [Developer Experience](#17-developer-experience)
 18. [Migration Guide](#18-migration-guide)
@@ -4836,6 +4839,60 @@ Form(
 )
 ```
 
+### 11.4 Toast Notifications
+
+Since Vango uses persistent WebSocket connections, traditional HTTP flash cookies don't work. Instead, use the toast package:
+
+```go
+import "github.com/vango-dev/vango/v2/pkg/toast"
+
+func DeleteProject(ctx vango.Ctx, id int) error {
+    if err := db.Projects.Delete(id); err != nil {
+        toast.Error(ctx, "Failed to delete project")
+        return err
+    }
+    
+    toast.Success(ctx, "Project deleted")
+    ctx.Navigate("/projects")
+    return nil
+}
+```
+
+**Client-Side Handler** (user provides):
+```javascript
+// Listen for toast events and render with your preferred library
+window.addEventListener("vango:toast", (e) => {
+    Toastify({ text: e.detail.message, className: e.detail.level }).showToast();
+});
+```
+
+### 11.5 File Uploads
+
+Large file uploads over WebSocket block the event loop. Use the hybrid HTTP+WS approach:
+
+```go
+import "github.com/vango-dev/vango/v2/pkg/upload"
+
+// 1. Mount upload handler (main.go)
+r.Post("/upload", upload.Handler(uploadStore))
+
+// 2. Handle in component (after client POSTs and receives temp_id via WS form)
+func CreatePost(ctx vango.Ctx, formData vango.FormData) error {
+    tempID := formData.Get("attachment_temp_id")
+    
+    if tempID != "" {
+        file, err := upload.Claim(uploadStore, tempID)
+        if err != nil {
+            return err
+        }
+        // Use file.Path or file.URL
+    }
+    
+    toast.Success(ctx, "Post created!")
+    return nil
+}
+```
+
 ---
 
 ## 12. JavaScript Islands
@@ -5185,6 +5242,95 @@ func CreateProject(ctx vango.Ctx, input CreateInput) (*Project, error) {
     input.Name = sanitize.String(input.Name)
 
     return db.Projects.Create(input)
+}
+```
+
+### 14.6 Authentication & Middleware
+
+Vango uses a **dual-layer architecture** that separates HTTP middleware from Vango's event-loop middleware:
+
+**Layer 1: HTTP Stack** (runs once per session):
+- Standard `func(http.Handler) http.Handler` middleware
+- Authentication, CORS, logging, panic recovery
+- Compatible with Chi, Gorilla, rs/cors, etc.
+
+**Layer 2: Vango Event Stack** (runs on every interaction):
+- Lightweight `func(ctx vango.Ctx, next func() error) error` middleware  
+- Authorization guards (RBAC), event validation
+- No HTTP overhead on the hot path
+
+#### The Context Bridge
+
+The WebSocket upgrade presents a challenge: HTTP request context dies after the upgrade. The Context Bridge solves this:
+
+```go
+app := vango.New(vango.Config{
+    // This runs ONCE during WebSocket upgrade
+    OnSessionStart: func(httpCtx context.Context, s *vango.Session) {
+        // Copy user from HTTP context to Vango session
+        if user := myauth.UserFromContext(httpCtx); user != nil {
+            auth.Set(s, user)
+        }
+    },
+})
+```
+
+#### Type-Safe Auth Package
+
+```go
+import "github.com/vango-dev/vango/v2/pkg/auth"
+
+// Require auth (returns error if not logged in)
+func Dashboard(ctx vango.Ctx) (vango.Component, error) {
+    user, err := auth.Require[*User](ctx)
+    if err != nil {
+        return nil, err  // ErrorBoundary handles redirect
+    }
+    return renderDashboard(user), nil
+}
+
+// Optional auth (guest allowed)
+func HomePage(ctx vango.Ctx) vango.Component {
+    user, ok := auth.Get[*User](ctx)
+    if ok {
+        return LoggedInHome(user)
+    }
+    return GuestHome()
+}
+```
+
+#### Integration with Chi Router
+
+Vango exposes itself as a standard `http.Handler` for ecosystem compatibility:
+
+```go
+func main() {
+    app := vango.New(vango.Config{
+        OnSessionStart: hydrateSession,
+    })
+
+    r := chi.NewRouter()
+    r.Use(middleware.Logger)
+    r.Use(middleware.Recoverer)
+    r.Use(AuthMiddleware)  // Your auth middleware
+    
+    r.Get("/api/health", healthHandler)
+    r.Handle("/*", app.Handler())  // Vango handles the rest
+    
+    http.ListenAndServe(":3000", r)
+}
+```
+
+#### Route-Level Auth Guards
+
+```go
+// app/routes/admin/_layout.go
+func Middleware() []router.Middleware {
+    return []router.Middleware{
+        auth.RequireRole(func(u *User) bool {
+            return u.IsAdmin
+        }),
+    }
 }
 ```
 
