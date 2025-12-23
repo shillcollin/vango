@@ -45,18 +45,18 @@ Phase 4 implements the build system that transforms user source code into Docker
 │  │        ▼                                                            ││
 │  │ Queue build job                                                     ││
 │  └─────────────────────────────────────────────────────────────────────┘│
-│                                                                          │
+│                                                                         │
 │  STEP 2: CLONE REPOSITORY                                               │
 │  ┌─────────────────────────────────────────────────────────────────────┐│
 │  │ Get GitHub App installation token (1 hour validity)                 ││
 │  │        │                                                            ││
 │  │        ▼                                                            ││
-│  │ git clone https://x-access-token:{token}@github.com/{repo}.git     ││
+│  │ git clone https://x-access-token:{token}@github.com/{repo}.git      ││
 │  │        │                                                            ││
 │  │        ▼                                                            ││
 │  │ git checkout {commit_sha or branch}                                 ││
 │  └─────────────────────────────────────────────────────────────────────┘│
-│                                                                          │
+│                                                                         │
 │  STEP 3: ANALYZE WITH RAILPACK                                          │
 │  ┌─────────────────────────────────────────────────────────────────────┐│
 │  │ railpack prepare .                                                  ││
@@ -68,7 +68,7 @@ Phase 4 implements the build system that transforms user source code into Docker
 │  │   - Runtime configuration                                           ││
 │  │   - Environment setup                                               ││
 │  └─────────────────────────────────────────────────────────────────────┘│
-│                                                                          │
+│                                                                         │
 │  STEP 4: BUILD WITH BUILDKIT                                            │
 │  ┌─────────────────────────────────────────────────────────────────────┐│
 │  │ Connect to BuildKit daemon (rootless)                               ││

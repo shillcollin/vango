@@ -35,6 +35,9 @@ type Config struct {
 
 	// Security
 	CSRFSecret string
+
+	// Encryption
+	EnvEncryptionKey string // 32 bytes for AES-256-GCM
 }
 
 // Load reads configuration from environment variables.
@@ -75,6 +78,19 @@ func Load() (*Config, error) {
 	// Validate session secret length (need 64 bytes for hash key + block key)
 	if len(cfg.SessionSecret) < 64 {
 		return nil, fmt.Errorf("SESSION_SECRET must be at least 64 characters, got %d", len(cfg.SessionSecret))
+	}
+
+	// Environment variable encryption key (optional in development, required in production)
+	cfg.EnvEncryptionKey = getEnv("ENV_ENCRYPTION_KEY", "")
+	if cfg.EnvEncryptionKey != "" && len(cfg.EnvEncryptionKey) != 32 {
+		return nil, fmt.Errorf("ENV_ENCRYPTION_KEY must be exactly 32 characters, got %d", len(cfg.EnvEncryptionKey))
+	}
+	// Generate a default key for development if not set
+	if cfg.EnvEncryptionKey == "" && cfg.IsDevelopment() {
+		cfg.EnvEncryptionKey = "dev-encryption-key-32-bytes!!"
+	}
+	if cfg.EnvEncryptionKey == "" {
+		return nil, fmt.Errorf("ENV_ENCRYPTION_KEY is required in production")
 	}
 
 	return cfg, nil

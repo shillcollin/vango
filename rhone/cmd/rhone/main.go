@@ -62,7 +62,10 @@ func main() {
 	}
 
 	// Handlers
-	h := handlers.New(cfg, db, sessions, github, githubApp, logger)
+	h, err := handlers.New(cfg, db, sessions, github, githubApp, logger)
+	if err != nil {
+		log.Fatalf("failed to create handlers: %v", err)
+	}
 
 	// Router
 	r := chi.NewRouter()
@@ -102,11 +105,25 @@ func main() {
 	r.Group(func(r chi.Router) {
 		r.Use(middleware.RequireAuth)
 
+		// Apps
 		r.Get("/apps", h.ListApps)
 		r.Get("/apps/new", h.NewApp)
+		r.Post("/apps", h.CreateApp)
+		r.Get("/apps/{slug}", h.ShowApp)
+		r.Get("/apps/{slug}/settings", h.AppSettings)
+		r.Post("/apps/{slug}/settings", h.UpdateApp)
+		r.Delete("/apps/{slug}", h.DeleteApp)
+
+		// Environment variables
+		r.Get("/apps/{slug}/env/new", h.EnvVarForm)
+		r.Post("/apps/{slug}/env", h.SetEnvVar)
+		r.Delete("/apps/{slug}/env/{key}", h.DeleteEnvVar)
+
+		// Settings (team)
 		r.Get("/settings", h.Settings)
 
-		// Repository API
+		// API endpoints
+		r.Get("/api/slug/preview", h.SlugPreview)
 		r.Get("/api/repos", h.ListRepositories)
 		r.Get("/api/repos/search", h.SearchRepositories)
 		r.Get("/api/repos/selector", h.RepoSelector)

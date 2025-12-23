@@ -1,5 +1,5 @@
 ---
-title: "Vango Architecture & Guide"
+title: "Vango Architecture & Guide" #just web, we've built most of this.
 slug: vango-architecture-guide
 version: 2.0
 status: RFC
@@ -6052,3 +6052,1245 @@ This keeps small numbers (most HIDs, lengths) as single bytes.
 ---
 
 *This document is the authoritative reference for Vango's architecture. For implementation details, see the source code and inline documentation.*
+
+
+------------------
+# Flaw and idea for better design:
+
+# Design Deep Dive: Client-Side Persistence in Vango
+
+> **Problem**: How do we persist user preferences (Theme, Sidebar State) across sessions in a framework where state lives on the server?
+
+---
+
+## 1. The Context: How Vango Works
+
+Vango is a **Server-Driven UI** framework. This means:
+1.  **State is on the Server**: All `Signal[T]` values live in process memory (RAM) on the Go server.
+2.  **UI is on the Client**: The browser is a "Thin Client" that just renders DOM updates sent by the server.
+3.  **The Bridge is Volatile**: The connection is a WebSocket. If the user refreshes the page, the WebSocket disconnects, the server-side session is destroyed, and all state in RAM is lost.
+
+### The Challenge
+Users expect certain UI states to survive a refresh:
+- "Dark Mode"
+- "Sidebar Collapsed"
+- "Table Sort Order"
+- "Language Preference"
+
+In a traditional SPA (React), these are stored in `localStorage`.
+In Vango, the server (where the logic lives) cannot synchronously read `localStorage` (where the data lives).
+
+---
+
+## 2. The Initial Idea: `.Persist()`
+
+The initial spec proposed a "Magic" API inspired by client-side reactivity libraries:
+
+```go
+// The aspirational API
+var SidebarOpen = vango.Signal(false).Persist(vango.LocalStorage, "sidebar")
+```
+
+### Why it was attractive
+- **DX**: One liner. Looks just like a standard signal.
+- **Familiarity**: Similar to MobX or Zustand middlewares.
+
+### Why it is Flawed (The "Context Gap")
+
+This API implies that a global or component-level variable can "know" the value of `localStorage` at initialization time.
+
+**Fail 1: Timing (The Lie)**
+When `vango.Signal(false)` executes on the server, the client hasn't connected yet.
+- Server: "I am initializing this component."
+- Client: *Still downloading `vango.js`...*
+- Result: The signal *must* initialize with `false`. Later, when the client connects, it *might* update to `true`. This causes logic bugs where the code assumes the stored value is available immediately.
+
+**Fail 2: Context (The Void)**
+```go
+// Global definition
+var Theme = vango.Signal("light").Persist(LocalStorage, "theme")
+```
+Whose localStorage? User A's? User B's?
+Without a `vango.Ctx` reference, the server doesn't know *which* connection to talk to.
+
+**Fail 3: Performance (The Flood)**
+If `.Persist()` works by sending every `.Set()` to the client, and we have 100 persisted signals, we risk spamming the WebSocket channel with minor state updates that might not even be needed.
+
+---
+
+## 3. The Architecture Constraint
+
+We are bound by the laws of physics:
+1.  **Server cannot read Client synchronousy.**
+2.  **Cookies** are the only data sent *before* the WebSocket connects (via HTTP headers).
+3.  **Handshake** is the first moment the Client can send arbitrary data (via WebSocket).
+
+## 4. A potential solution
+
+This feedback is gold. Both responses identify the same pressure points, which validates that these are the real edge cases to solve. Let me synthesize and propose concrete solutions for each.
+
+---
+
+## Synthesis: The Gaps We Need to Close
+
+| Gap | Identified By | Severity |
+|-----|---------------|----------|
+| Server restart loses all state | Both | High (production blocker) |
+| Sticky sessions are a hard constraint | Both | High (limits deployment options) |
+| 30s window may be too short/rigid | Doc 11 | Medium |
+| Memory protection for detached sessions | Doc 10 | Medium |
+| "Reconnecting" UI feedback | Doc 10 | Medium |
+| URLParam history spam | Doc 10 | Medium |
+| URLParam vs path param conflict | Doc 10 | Low (documentation) |
+| Pref merge strategy edge cases | Both | Medium |
+| Cross-device sync race conditions | Doc 11 | Medium |
+| Form draft persistence pattern | Both | Medium (documentation) |
+| Testing utilities | Doc 11 | High (DX) |
+| init() global state for testing | Doc 10 | Low |
+
+---
+
+## Proposed Solutions
+
+### 1. Session Serialization (The "Graceful Restart" Problem)
+
+Both reviewers flagged this. The solution is an **optional serialization interface**:
+
+```go
+// For teams that need server restarts without losing sessions
+type SessionStore interface {
+    Save(sessionID string, data []byte) error
+    Load(sessionID string) ([]byte, error)
+    Delete(sessionID string) error
+    // Called on graceful shutdown
+    SaveAll(sessions map[string][]byte) error
+}
+
+// Built-in implementations
+vango.MemoryStore()           // Default: no persistence
+vango.RedisStore(client)      // Redis-backed
+vango.SQLStore(db, "sessions") // Database-backed
+```
+
+**What gets serialized?**
+
+Not goroutines or channels—just the **Signal values**:
+
+```go
+type SerializableSession struct {
+    ID        string
+    Token     string
+    Signals   map[string]json.RawMessage  // Signal key → JSON value
+    Prefs     map[string]json.RawMessage  // Pref cache
+    URLParams map[string]string
+    CreatedAt time.Time
+    UserID    *string  // If authenticated
+}
+```
+
+**Lifecycle with serialization:**
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                    SESSION LIFECYCLE (WITH STORE)                │
+├─────────────────────────────────────────────────────────────────┤
+│                                                                  │
+│  1. User connects                                                │
+│     ├── Check store for existing session token                  │
+│     ├── If found: deserialize → rehydrate component tree        │
+│     └── If not: create new session                              │
+│                                                                  │
+│  2. User disconnects                                             │
+│     ├── Move to Detached state                                  │
+│     ├── Serialize signal values to store (async)                │
+│     └── Start grace period timer                                │
+│                                                                  │
+│  3. Server receives SIGTERM (graceful shutdown)                 │
+│     ├── Stop accepting new connections                          │
+│     ├── Serialize ALL active sessions to store                  │
+│     └── Exit                                                     │
+│                                                                  │
+│  4. New server instance starts                                   │
+│     ├── Sessions exist in store (Redis/DB)                      │
+│     └── Clients reconnect → rehydrate from store                │
+│                                                                  │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+**The constraint**: Signals must be JSON-serializable. This is already true for most state. For non-serializable state (channels, functions), those Signals are marked as `Transient` and excluded:
+
+```go
+// This survives restart
+count := vango.Signal(0)
+
+// This does NOT survive restart (channels can't serialize)
+updates := vango.Signal(make(chan Event)).Transient()
+```
+
+**Config:**
+
+```go
+app := vango.New(vango.Config{
+    Session: vango.SessionConfig{
+        ResumeWindow: 30 * time.Second,
+        
+        // Optional: Enable session persistence
+        Store: vango.RedisStore(redisClient, vango.StoreConfig{
+            Prefix:     "vango:session:",
+            Expiration: 5 * time.Minute,  // Longer than ResumeWindow
+        }),
+    },
+})
+```
+
+---
+
+### 2. Memory Protection for Detached Sessions
+
+Both reviewers raised the "10,000 tabs" attack vector.
+
+**Solution**: Separate limits + LRU eviction:
+
+```go
+Session: vango.SessionConfig{
+    // Total sessions (connected + detached)
+    MaxSessions: 10000,
+    
+    // Detached sessions can't exceed this
+    MaxDetachedSessions: 1000,
+    
+    // If at limit, evict oldest detached first
+    EvictionPolicy: vango.LRU,
+    
+    // Per-IP rate limiting for new sessions
+    MaxSessionsPerIP: 50,
+}
+```
+
+**Behavior when limits are hit:**
+
+1. New connection when at `MaxSessions`: Reject with 503
+2. New detach when at `MaxDetachedSessions`: Evict oldest detached session
+3. Memory pressure (configurable threshold): Aggressively evict detached sessions
+
+---
+
+### 3. Configurable Resume Window
+
+Doc 11 correctly points out that 30s is arbitrary. Different use cases need different windows.
+
+**Solution**: Route-level overrides:
+
+```go
+// Global default
+app := vango.New(vango.Config{
+    Session: vango.SessionConfig{
+        ResumeWindow: 30 * time.Second,
+    },
+})
+
+// Route-specific override for complex wizards
+app.Route("/checkout/wizard", WizardHandler, vango.RouteConfig{
+    ResumeWindow: 5 * time.Minute,
+})
+
+// Shorter window for simple pages
+app.Route("/dashboard", DashboardHandler, vango.RouteConfig{
+    ResumeWindow: 10 * time.Second,
+})
+```
+
+---
+
+### 4. "Reconnecting" UI Feedback
+
+Doc 10 correctly identifies that users need visual feedback during disconnect.
+
+**Solution**: Built-in CSS classes + optional toast:
+
+```go
+// vango.js automatically manages these classes on <html>
+// .vango-connected    - Normal state
+// .vango-connecting   - Initial connection in progress  
+// .vango-reconnecting - Disconnected, attempting to reconnect
+// .vango-disconnected - Gave up (session expired or error)
+```
+
+**CSS usage:**
+
+```css
+/* Show reconnecting overlay */
+.vango-reconnecting::after {
+    content: "Reconnecting...";
+    position: fixed;
+    top: 0;
+    left: 0;
+    right: 0;
+    padding: 8px;
+    background: #fbbf24;
+    text-align: center;
+    z-index: 9999;
+}
+
+/* Disable interactions while reconnecting */
+.vango-reconnecting main {
+    pointer-events: none;
+    opacity: 0.7;
+}
+```
+
+**Optional toast helper:**
+
+```go
+Head(
+    // Injects minimal JS for toast notifications
+    vango.ReconnectToast(vango.ToastConfig{
+        Reconnecting: "Connection lost. Reconnecting...",
+        Reconnected:  "Connected!",
+        Failed:       "Connection failed. Please refresh.",
+    }),
+)
+```
+
+---
+
+### 5. URLParam History Mode
+
+Doc 10 correctly identifies the history spam problem.
+
+**Solution**: `Push` vs `Replace` modes:
+
+```go
+// Default: Push (creates history entry)
+page := vango.URLParam[int](ctx, "page", 1)
+// Clicking page 2, then page 3 = two history entries
+// Back button goes: 3 → 2 → 1
+
+// Replace mode (no history entry)
+search := vango.URLParam[string](ctx, "q", "", vango.Replace)
+// Typing "hello" doesn't create history entries
+// Only creates entry on blur/submit
+
+// Replace with debounce (common pattern for search)
+search := vango.URLParam[string](ctx, "q", "", 
+    vango.Replace,
+    vango.Debounce(300*time.Millisecond))
+```
+
+---
+
+### 6. URLParam vs Path Parameter Clarification
+
+Doc 10 asks about the relationship between URLParam and route parameters.
+
+**Answer**: They're distinct concepts:
+
+```go
+// Route definition: path parameters
+app.Route("/projects/{id}", ProjectHandler)
+
+// Inside handler: path param from router
+func ProjectHandler(ctx vango.Ctx) vango.Component {
+    // Path parameter - from the router
+    projectID := ctx.Param("id")  // e.g., "123" from /projects/123
+    
+    // Query parameter - from URLParam
+    tab := vango.URLParam[string](ctx, "tab", "overview")  // ?tab=settings
+    
+    // Full URL: /projects/123?tab=settings
+}
+```
+
+**Documentation should clarify:**
+- Path parameters (`/projects/{id}`) → `ctx.Param()`
+- Query parameters (`?tab=settings`) → `vango.URLParam()`
+
+---
+
+### 7. Complex URLParam Encoding
+
+Both reviewers noted that Base64 JSON is ugly.
+
+**Solution**: Multiple encoding strategies:
+
+```go
+// Simple types: direct encoding (default)
+page := vango.URLParam[int](ctx, "page", 1)
+// URL: ?page=5
+
+// String arrays: comma-separated
+tags := vango.URLParam[[]string](ctx, "tags", nil, vango.CommaSeparated)
+// URL: ?tags=go,web,api
+
+// Complex structs: compressed encoding
+filters := vango.URLParam[Filters](ctx, "f", Filters{}, vango.CompressedJSON)
+// URL: ?f=eJxLz... (shorter than base64)
+
+// Alternative: named params for common struct fields
+type Filters struct {
+    Category string `url:"cat"`
+    MinPrice int    `url:"min"`
+    MaxPrice int    `url:"max"`
+}
+filters := vango.URLParam[Filters](ctx, "", Filters{}, vango.FlattenStruct)
+// URL: ?cat=electronics&min=100&max=500
+```
+
+The `FlattenStruct` option is particularly useful—it spreads struct fields into individual query params, making URLs human-readable.
+
+---
+
+### 8. Pref Merge Strategy (Refined)
+
+Both reviewers asked about the multi-device scenario. Here's the precise behavior:
+
+```go
+// The merge strategy, fully specified
+type MergeStrategy struct {
+    // When both DB and localStorage have a value for the same key
+    OnConflict: ConflictResolution  // DBWins (default), LocalWins, Prompt
+    
+    // When DB is missing a key that localStorage has
+    OnMissingInDB: MissingResolution  // Adopt (default), Ignore
+    
+    // When localStorage is missing a key that DB has
+    OnMissingInLocal: MissingResolution  // Adopt (default), Ignore
+    
+    // Notify user when their local pref was overwritten
+    NotifyOnOverwrite: bool
+}
+
+const (
+    DBWins    ConflictResolution = iota  // Server is authoritative
+    LocalWins                             // Client is authoritative (rare)
+    Prompt                                // Ask user (most UX-friendly)
+)
+```
+
+**Scenario walkthrough:**
+
+```
+User's journey:
+───────────────────────────────────────────────────────────────────
+
+1. Desktop (anonymous): Set theme = "dark"
+   └── localStorage["theme"] = "dark"
+
+2. Create account on Desktop
+   └── DB["theme"] = "dark" (adopted from localStorage)
+
+3. Phone (anonymous): Has localStorage["theme"] = "light" (default)
+
+4. Login on Phone
+   ├── DB has: theme = "dark"
+   ├── Local has: theme = "light"  
+   ├── Conflict! OnConflict = DBWins
+   ├── Result: Phone shows "dark"
+   └── If NotifyOnOverwrite: Toast "Synced your dark mode preference"
+
+5. User changes to "light" on Phone
+   └── DB updates to "light", syncs to Desktop (if Realtime)
+```
+
+**The key insight**: DB is authoritative for authenticated users. localStorage is just a cache. On login, DB wins any conflict. This is the least surprising behavior.
+
+---
+
+### 9. Cross-Device Sync Consistency
+
+Doc 11 raised the race condition concern.
+
+**Solution**: Last-Write-Wins with timestamps:
+
+```go
+type PrefValue struct {
+    Value     json.RawMessage
+    UpdatedAt time.Time  // Millisecond precision
+    DeviceID  string     // For debugging/audit
+}
+
+// When two devices update simultaneously:
+// 1. Both send updates with their local timestamp
+// 2. Server keeps the one with the later timestamp
+// 3. Server broadcasts the winner to all sessions
+// 4. "Loser" device sees its change reverted
+
+// This is eventually consistent, not strongly consistent
+// For prefs (theme, sidebar), this is fine
+```
+
+**Documentation should state**: "Pref sync uses last-write-wins. If you change a pref on two devices within the same second, the result is non-deterministic. For prefs like theme/language, this is acceptable UX."
+
+For apps that need stronger consistency, they should use server state (Signals backed by DB), not Prefs.
+
+---
+
+### 10. Form Draft Persistence Pattern
+
+Both reviewers identified this as a common need.
+
+**Solution**: Document as a pattern + optional helper:
+
+```go
+// Pattern 1: Use Pref directly for long-lived drafts
+var ApplicationDraft = vango.Pref("app_draft", vango.PrefConfig[ApplicationForm]{
+    Default: ApplicationForm{},
+    TTL:     7 * 24 * time.Hour,  // Auto-expire after 7 days
+})
+
+func ApplicationWizard(ctx vango.Ctx) vango.Component {
+    draft := ApplicationDraft.Use(ctx)
+    
+    return Form(
+        OnInput(func(data ApplicationForm) {
+            draft.Set(data)  // Auto-saves on every change (debounced)
+        }),
+        OnSubmit(func(data ApplicationForm) {
+            submitApplication(data)
+            draft.Clear()  // Clear draft on successful submit
+        }),
+    )
+}
+
+// Pattern 2: UseForm hook with built-in persistence
+form := vango.UseForm(ctx, ApplicationSchema, vango.FormConfig{
+    Persist: "application_draft",  // Saves to Pref automatically
+    PersistDebounce: 500 * time.Millisecond,
+    PersistTTL: 7 * 24 * time.Hour,
+})
+```
+
+---
+
+### 11. Testing Utilities
+
+Doc 11 correctly identifies this as critical for DX.
+
+**Solution**: First-class test helpers:
+
+```go
+func TestCartSurvivesRefresh(t *testing.T) {
+    // Create test session
+    session := vango.NewTestSession(t)
+    
+    // Mount component
+    session.Mount(CartPage)
+    
+    // Interact
+    session.Click("#add-item")
+    session.Click("#add-item")
+    
+    // Assert state
+    cart := session.GetSharedSignal(CartItems)
+    assert.Equal(t, 2, len(cart))
+    
+    // Simulate refresh (disconnect + reconnect within grace period)
+    session.SimulateRefresh()
+    
+    // Assert state survived
+    cart = session.GetSharedSignal(CartItems)
+    assert.Equal(t, 2, len(cart))
+}
+
+func TestURLParamUpdatesURL(t *testing.T) {
+    session := vango.NewTestSession(t)
+    session.Mount(ProductList)
+    
+    // Check initial URL
+    assert.Equal(t, "1", session.URL().Query().Get("page"))
+    
+    // Click next page
+    session.Click("#next-page")
+    
+    // Assert URL updated
+    assert.Equal(t, "2", session.URL().Query().Get("page"))
+    
+    // Simulate back button
+    session.SimulateBack()
+    
+    // Assert state reverted
+    assert.Equal(t, "1", session.URL().Query().Get("page"))
+}
+
+func TestPrefPersistsAcrossLogins(t *testing.T) {
+    session := vango.NewTestSession(t)
+    
+    // Anonymous: set theme
+    session.Mount(App)
+    session.SetPref(prefs.Theme, "dark")
+    
+    // Create account
+    session.SimulateLogin("user123")
+    
+    // Assert theme persisted to DB
+    dbTheme := testDB.GetPref("user123", "theme")
+    assert.Equal(t, "dark", dbTheme)
+    
+    // New session, same user
+    session2 := vango.NewTestSession(t)
+    session2.SimulateLogin("user123")
+    session2.Mount(App)
+    
+    // Assert theme loaded from DB
+    assert.Equal(t, "dark", session2.GetPref(prefs.Theme))
+}
+```
+
+**Test utilities provided:**
+
+```go
+// Session lifecycle
+session.Mount(component)
+session.SimulateRefresh()           // Disconnect + reconnect
+session.SimulateDisconnect()        // Just disconnect
+session.SimulateReconnect()         // Just reconnect  
+session.SimulateGracePeriodExpiry() // Force session death
+session.SimulateServerRestart()     // Serialize + deserialize
+
+// User actions
+session.Click(selector)
+session.Type(selector, text)
+session.Submit(selector)
+
+// Navigation
+session.SimulateBack()
+session.SimulateForward()
+session.Navigate(path)
+
+// State inspection
+session.GetSignal(signal)
+session.GetSharedSignal(signal)
+session.GetPref(pref)
+session.URL()
+
+// Auth
+session.SimulateLogin(userID)
+session.SimulateLogout()
+```
+
+---
+
+## Updated Configuration (Complete)
+
+```go
+app := vango.New(vango.Config{
+    // ════════════════════════════════════════════════════════════
+    // SESSION MANAGEMENT
+    // ════════════════════════════════════════════════════════════
+    Session: vango.SessionConfig{
+        // Grace period for reconnection
+        ResumeWindow: 30 * time.Second,
+        
+        // Memory limits
+        MaxSessions:          10000,
+        MaxDetachedSessions:  1000,
+        MaxSessionsPerIP:     50,
+        EvictionPolicy:       vango.LRU,
+        
+        // Optional: Persistence for non-sticky deployments
+        Store: vango.RedisStore(redisClient, vango.StoreConfig{
+            Prefix:     "vango:session:",
+            Expiration: 5 * time.Minute,
+        }),
+        
+        // Token configuration
+        TokenLength:   32,
+        TokenCookie:   "vango_session",
+        TokenStorage:  vango.SessionStorage,  // sessionStorage (per-tab)
+    },
+    
+    // ════════════════════════════════════════════════════════════
+    // USER PREFERENCES
+    // ════════════════════════════════════════════════════════════
+    Prefs: vango.PrefsConfig{
+        // Database for authenticated users (nil = anon-only mode)
+        Store: vango.PostgresStore(db, "user_preferences"),
+        
+        // Merge strategy for login
+        MergeStrategy: vango.MergeStrategy{
+            OnConflict:        vango.DBWins,
+            OnMissingInDB:     vango.Adopt,
+            NotifyOnOverwrite: true,
+        },
+        
+        // Cookie settings
+        Cookie: vango.CookieConfig{
+            Name:     "vango_prefs",
+            MaxAge:   365 * 24 * time.Hour,
+            Secure:   true,
+            SameSite: http.SameSiteLaxMode,
+        },
+        
+        // Sync settings
+        RealtimeSync: true,  // Broadcast pref changes to all user sessions
+        SyncConsistency: vango.LastWriteWins,
+    },
+    
+    // ════════════════════════════════════════════════════════════
+    // URL PARAMETERS
+    // ════════════════════════════════════════════════════════════
+    URLParams: vango.URLParamConfig{
+        MaxURLLength:    2048,
+        MaxParamLength:  500,
+        DefaultMode:     vango.Push,      // vs vango.Replace
+        DefaultDebounce: 100 * time.Millisecond,
+        StructEncoding:  vango.FlattenStruct,  // vs CompressedJSON
+    },
+    
+    // ════════════════════════════════════════════════════════════
+    // UI FEEDBACK
+    // ════════════════════════════════════════════════════════════
+    UI: vango.UIConfig{
+        // CSS classes for connection state
+        ConnectionClasses: true,  // Adds .vango-connected, etc. to <html>
+        
+        // Optional built-in toast
+        ReconnectToast: &vango.ToastConfig{
+            Reconnecting: "Reconnecting...",
+            Reconnected:  "Connected!",
+            Failed:       "Connection lost. Please refresh.",
+        },
+    },
+})
+```
+
+---
+
+## Updated Decision Flowchart
+
+Incorporating Doc 10's suggestion:
+
+```
+                    "Where should this state live?"
+                                 │
+                                 ▼
+                    ┌────────────────────────────┐
+                    │ Must it be shareable via   │
+                    │ URL? (pagination, search,  │
+                    │ filters, deep links)       │
+                    └────────────────────────────┘
+                                 │
+                    YES ─────────┴───────── NO
+                     │                       │
+                     ▼                       ▼
+                 URLParam       ┌────────────────────────────┐
+                                │ Must it survive closing    │
+                                │ the browser tab?           │
+                                └────────────────────────────┘
+                                             │
+                                YES ─────────┴───────── NO
+                                 │                       │
+                                 ▼                       ▼
+                    ┌────────────────────────┐    Session Resumption
+                    │ Is it purely client-   │    handles this!
+                    │ side visual state?     │    Just use Signal.
+                    │ (scroll, focus)        │
+                    └────────────────────────┘
+                                 │
+                    YES ─────────┴───────── NO
+                     │                       │
+                     ▼                       ▼
+                   Hook                    Pref
+              (with localStorage)    (Cookie + DB + localStorage)
+```
+
+**Key insight**: The middle path (survives tab close = NO) leads to "just use Signal" because Session Resumption makes refresh survival automatic.
+
+---
+
+## Summary: What Changed
+
+| Original Design | Refined Design |
+|-----------------|----------------|
+| Sticky sessions required | Sticky sessions OR Redis/DB-backed session store |
+| Fixed 30s grace period | Configurable per-route |
+| No memory protection | MaxDetachedSessions + LRU eviction + per-IP limits |
+| No reconnection UI | Built-in CSS classes + optional toast |
+| URLParam always pushes history | Push vs Replace modes |
+| Base64 JSON for complex types | FlattenStruct + CommaSeparated + CompressedJSON options |
+| Simple merge strategy | Full merge config with NotifyOnOverwrite |
+| LWW for sync implied | LWW explicit + documented |
+| No test utilities | First-class TestSession API |
+
+The architecture is now production-ready. The main remaining work is implementation and documentation.
+
+
+---
+Making Vango Mobile #still in design phase and not implemented.
+---
+
+**Vango-Native** is not just viable—it is the logical endpoint of the Vango architecture.
+
+
+
+The mobile industry is currently struggling with the "updates problem": you have to recompile, re-sign, and wait for App Store review for every UI tweak. React Native solves the cross-platform part but still bundles logic on the device.
+
+
+
+By moving the **logic** to the server (Go) and leaving only a **rendering engine** (The Player) on the device, you get "Over-The-Air" updates by default for the entire app.
+
+
+
+Here is the deep dive into how **Vango-Native** would work, its architecture, and the Developer Experience (DX).
+
+
+
+-----
+
+
+
+### 1\. Architecture: The "Standard Player"
+
+
+
+Unlike React Native, which ships a JavaScript VM (Hermes) and your business logic in a JS bundle, Vango-Native ships a **generic native shell**.
+
+
+
+We can call this the **Vango Player**.
+
+
+
+#### The Stack
+
+
+
+* **Server (Go):** Runs all business logic, state management, and API calls.
+
+* **Protocol (Binary):** The exact same encoded binary stream from Vango V2.
+
+* **Client (iOS/Android):** A thin native app that does three things:
+
+1. **Decode:** Deserializes `SET_ATTR` or `INSERT_NODE` instructions.
+
+2. **Layout:** Uses **Yoga** (the C++ layout engine used by React Native) to calculate Flexbox layouts.
+
+3. **Render:** Maps Vango Nodes to real native views (`UIView` on iOS, `android.view.View` on Android).
+
+
+
+#### Why this is faster than React Native
+
+
+
+React Native has a "Bridge" bottleneck: Serializing JSON ↔ JavaScript VM ↔ Native Modules.
+
+Vango-Native removes the JS VM entirely. The binary stream talks directly to the Native/C++ layer.
+
+
+
+-----
+
+
+
+### 2\. The Component Model
+
+
+
+Vango-Native needs a new package, `vango/native`, which provides type-safe Go wrappers for standard mobile UI elements.
+
+
+
+```go
+
+package main
+
+
+
+import (
+
+"vango"
+
+. "vango/native" // The Native Component Library
+
+)
+
+
+
+func UserProfile(u User) *vango.VNode {
+
+return View(
+
+Style(
+
+FlexDirection("row"),
+
+Padding(16),
+
+BackgroundColor("#FFFFFF"),
+
+CornerRadius(8),
+
+),
+
+// Image is a native UIImageView / ImageView
+
+Image(
+
+Source(u.AvatarURL),
+
+Style(Width(50), Height(50), BorderRadius(25)),
+
+),
+
+View(
+
+Style(MarginLeft(12), JustifyContent("center")),
+
+Text(
+
+Content(u.Name),
+
+Style(FontSize(18), FontWeight("bold"), Color("#333")),
+
+),
+
+Text(
+
+Content("Status: Online"),
+
+Style(FontSize(14), Color("green")),
+
+),
+
+),
+
+)
+
+}
+
+```
+
+
+
+**Key Difference:** On the web, `Div()` renders a `<div>`. In Vango-Native, `View()` sends a binary instruction that the iOS Player interprets as `new UIStackView()`.
+
+
+
+-----
+
+
+
+### 3\. Developer Experience (DX)
+
+
+
+This is where Vango-Native shines. The feedback loop is instantaneous because there is no compilation step for the client.
+
+
+
+#### The "Vango Go" App
+
+
+
+Imagine a generic app in the App Store called **"Vango Go"** (similar to the Expo Go app for React Native).
+
+
+
+**The Workflow:**
+
+
+
+1. **Start Server:** You run `go run main.go` on your laptop.
+
+2. **Open App:** You open "Vango Go" on your iPhone.
+
+3. **Scan:** You scan a QR code on your terminal.
+
+4. **Develop:**
+
+* You change `Color("green")` to `Color("blue")` in Go.
+
+* The server recompiles (50ms).
+
+* The server pushes a binary patch to the phone.
+
+* The phone updates **instantly** without reloading the full app context.
+
+
+
+#### No "Native Builds"
+
+
+
+For 95% of development, you never touch Xcode or Android Studio. You are just writing Go code. The "Standard Player" already has the map, camera, and video components pre-compiled.
+
+
+
+-----
+
+
+
+### 4\. Handling Complex Interactions (The "Native Hook")
+
+
+
+Latency is the enemy of Server-Driven UI. If a user swipes a card, you can't wait 100ms for the server to say "move pixel by pixel."
+
+
+
+Vango-Native solves this with **Declarative Gestures** (Client Hooks adaptation):
+
+
+
+**Scenario: A Tinder-like Swipe Card**
+
+You define the *rules* of the interaction in Go, but the *physics* run on the device.
+
+
+
+```go
+
+View(
+
+// This hook runs on the native thread (120fps on iPad Pro)
+
+Hook("SwipeGesture", map[string]any{
+
+"directions": []string{"left", "right"},
+
+"threshold": 100, // pixels
+
+"rotation": 15, // degrees rotation while dragging
+
+}),
+
+// Server only cares about the FINAL outcome
+
+OnEvent("swipeRight", func() {
+
+db.Matches.Create(currentUser, targetUser)
+
+}),
+
+OnEvent("swipeLeft", func() {
+
+// Load next profile
+
+}),
+
+CardContent(user),
+
+)
+
+```
+
+
+
+The Native Player sees `Hook("SwipeGesture")` and attaches a native `UIPanGestureRecognizer`. It handles the smooth movement, rotation, and spring animation locally. It only pings the server when the action is **committed**.
+
+
+
+-----
+
+
+
+### 5\. Native Islands (Escape Hatch)
+
+
+
+What if you need a specific native SDK, like a specialized AR library or a biometric scanner that isn't in the Standard Player?
+
+
+
+You build a **"Custom Player."**
+
+
+
+1. **Fork** the Vango Player repo (iOS/Android).
+
+2. **Add** your native Swift/Kotlin code (e.g., `MyARView`).
+
+3. **Register** it in the Player's registry map.
+
+4. **Use** it in Go:
+
+
+
+<!-- end list -->
+
+
+
+```go
+
+// In Go
+
+NativeIsland("MyARView", map[string]any{
+
+"model": "chair.usdz",
+
+})
+
+```
+
+
+
+This is similar to "ejecting" in Expo. You now have your own binary, but you still keep the Server-Driven architecture for the rest of the app.
+
+
+
+### Summary Comparison
+
+
+
+| Metric | React Native | Vango-Native |
+
+| :--- | :--- | :--- |
+
+| **Language** | TypeScript | Go |
+
+| **Logic Runtime** | On Device (JS Bundle) | On Server (Go Binary) |
+
+| **Update Speed** | CodePush / App Store | Instant (Server Deploy) |
+
+| **App Size** | \~20MB+ (JS Engine + Bundle) | \~5MB (Thin Player) |
+
+| **Offline** | Yes | Needs WASM mode (cached) |
+
+| **DX** | Hot Reload (Fast) | Hot Reload (Instant - no bundler) |
+
+Apple's App Store Review Guidelines (specifically Section 2.5.2 and 3.3.2) are the "Law of the Land" for mobile frameworks.
+
+To mitigate this risk, you must explicitly distinguish between Data (Interpreted) and Code (Executable). Vango Native is compliant because it technically never downloads "Code."
+
+Here is the risk mitigation strategy to include in your architecture guide.
+
+26. App Store Compliance Strategy
+Risk: Apple Guideline 2.5.2 prohibits apps that "download, install, or execute code which introduces or changes features or functionality of the app."
+
+Solution: Vango Native strictly separates the Execution Engine (The Player) from the Instruction Stream (The Logic).
+
+26.1 The "Browser" Argument (Compliance via Precedent)
+Apple allows apps like Chrome or Figma to download and render new interfaces because they classify HTML/JS as "Interpreted Code" (Guideline 3.3.2), not "Executable Binary Code."
+
+Vango operates on the same principle:
+
+The Vango Player is a specialized browser. It is a static binary compiled once and reviewed by Apple.
+
+The Protocol is the HTML. It is a passive binary stream of instructions (INSERT_NODE, UPDATE_ATTR), not machine code (x86/ARM).
+
+Precedent: This is exactly how React Native (CodePush) and Expo operate. They download new JavaScript bundles OTA. Apple allows this provided the update does not "significantly change the primary purpose of the application".
+
+26.2 The "No OTA Logic" Constraint (For Embedded Mode)
+There is a critical constraint for the Vango Embedded (Offline) mode:
+
+Allowed: Syncing Data (SQLite rows, JSON, VNode trees) to the embedded Go engine.
+
+Prohibited: Updating the Go Engine itself (.dylib, .so, or compiled Go binary) OTA.
+
+The Rule: If you need to change the Go Logic (func main()) in Embedded Mode, you must issue a full App Store update. If you need to change the UI or State in Cloud Mode, you can do it OTA instantly.
+
+26.3 The "Interpreter" Safeguard
+To strictly comply with Guideline 3.3.2 ("Interpreted code may be downloaded... if run by an interpreter packaged in the Application"), we define the Vango Player as a Virtual Machine:
+
+Fixed Instruction Set: The Player only understands a finite set of opcodes (0x01: CREATE_VIEW, 0x02: ADD_CHILD).
+
+No Arbitrary Execution: The protocol cannot allocate memory or access OS APIs (Camera, Contacts) directly. It must request them via the Player's registered "Native Islands".
+
+Sandboxing: The logic lives on the Server (or sandboxed Thread). The Player is just a dumb renderer.
+
+Verdict: As long as Vango does not download compiled ARM64 binaries, it complies with current App Store policies.
+
+22. Vango NativeVango Native is the logical endpoint of the Vango architecture. By moving logic to the server (or an embedded Go engine) and leaving only a rendering shell on the device, we solve the mobile "updates problem" and eliminate the JavaScript bridge entirely.22.1 Architecture: The "Player" ModelUnlike React Native, which ships a JS VM and business logic on the device, Vango Native ships a generic native shell called the Vango Player.The Stack:Server (Go): Runs logic, state, and API calls.Protocol: The exact same binary stream used in V2 (INSERT_NODE, SET_ATTR).Client (The Player): A thin native app (Swift/Kotlin) that:Decodes the binary stream.Layouts using Yoga (C++ Flexbox engine).Renders to native views (UIView, android.view.View).Performance:Because the binary stream talks directly to the Native/C++ layer, we bypass the JavaScript bridge bottleneck completely.22.2 The Component Model (vango/native)Mobile development requires different primitives than the web. We introduce the vango/native package.Gopackage main
+
+import (
+    "vango"
+    . "vango/native" // Native Primitives
+)
+
+func UserProfile(u User) *vango.VNode {
+    return View(
+        Style(
+            FlexDirection("row"),
+            Padding(16),
+            BackgroundColor("#FFFFFF"),
+            CornerRadius(8),
+        ),
+        // Renders as UIImageView on iOS
+        Image(
+            Source(u.AvatarURL),
+            Style(Width(50), Height(50), BorderRadius(25)),
+        ),
+        View(
+            Style(MarginLeft(12), JustifyContent("center")),
+            // Renders as UILabel on iOS
+            Text(
+                Content(u.Name),
+                Style(FontSize(18), FontWeight("bold")),
+            ),
+        ),
+    )
+}
+22.3 Native Hooks (Declarative Gestures)Latency is the enemy of mobile interaction. We cannot wait 100ms for the server to confirm a swipe. We solve this with Native Hooks—defining the rules in Go, but running the physics on the device.GoView(
+    // The "SwipeGesture" hook attaches a UIPanGestureRecognizer
+    // It runs at 120fps on the device (Main Thread)
+    Hook("SwipeGesture", map[string]any{
+        "directions": []string{"left", "right"},
+        "threshold":  100, // pixels
+        "rotation":   15,  // degrees
+    }),
+    
+    // Server only receives the FINAL committed event
+    OnEvent("swipeRight", func() {
+        db.Matches.Create(currentUser, targetUser)
+    }),
+)
+22.4 Offline Support: Vango EmbeddedFor offline capabilities, we do not fall back to caching HTML. We run the Go Engine on the device using gomobile.The "In-App Server" Architecture:Compile: The Vango app is compiled to a native library (.framework/.aar) using gomobile bind.Runtime: The Go runtime lives in a background thread on the phone.Bridge: Instead of WebSockets, the Player communicates with the Go engine via Direct Memory Calls (FFI).ModeLogic LocationTransportLatencyCloud ModeData CenterWebSocket50-100msEmbedded ModeDevice (Background Thread)Memory Pointer~0msThis creates a "Localhost" pattern where the app works 100% offline because the server is in the user's pocket.23. Vango UniversalWe can unify Web and Mobile into a single codebase using Abstract Primitives.23.1 The Universal Package (vango/uni)Instead of writing Div (Web) or View (Mobile), you use Stack.Goimport . "vango/uni"
+
+func ProductCard(p Product) *vango.VNode {
+    // This component renders natively on ALL platforms
+    return Stack(
+        Direction("vertical"),
+        Padding(16),
+        
+        Text(Content(p.Name), Style(Bold())),
+        
+        Button(
+            Label("Buy Now"),
+            OnTap(func() { cart.Add(p) }),
+        ),
+    )
+}
+Context-Aware Encoding:The server checks the connection context (ctx.Client):If Web: Serializes Stack → <div style="display:flex">If Mobile: Serializes Stack → INSERT_NODE (Type: STACK)23.2 Capability NegotiationFor platform-specific features, use server-side branching based on the client's handshake capabilities:Gofunc UploadControl(ctx vango.Ctx) *vango.VNode {
+    // Branching based on capabilities, not just user agent
+    if ctx.HasCapability("CAMERA") {
+        return Button(
+            Label("Take Selfie"),
+            OnTap(func() { ctx.Send(NativeCommand("OPEN_CAMERA")) }),
+        )
+    }
+
+    return Input(Type("file"), Accept("image/*"))
+}
+
+25. Developer Experience (DX)
+25.1 Vango Go
+Development does not require Xcode or Android Studio.
+
+Download "Vango Go" from the App Store.
+
+Run vango dev on your laptop.
+
+Scan the QR code.
+
+Instant Updates: Changing Go code sends a patch to the phone instantly. No compilation, no app restart.
+
+25.2 The "Polyglot Edge" Deployment
+Vango Cloud allows you to treat the App Store like a CDN:
+
+You push to Git.
+
+Vango Cloud updates the Web PWA.
+
+Vango Cloud instantly updates the Logic for all Native App users (OTA).
+
+Zero App Store Review time for logic or UI changes.
+"""
+
+
+### RHONE ### (The Go-To deployment/hosting/obs platform for Vango apps.)
+
+Lots of ideas here. Seems like using fly.io may be a good way to get an mvp out there, they run on firecracker and have some cool features. Worth research more deeply. As well as considering other options.
+
+Vango will be an open-source framework devs can deploy however they want, but making Rhone a go-to platform for Vango apps is our goal either for increased DX, functionality, performance, cost efficiency, or any other reason.
+

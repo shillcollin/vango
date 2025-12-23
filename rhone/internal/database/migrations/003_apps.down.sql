@@ -1,0 +1,2 @@
+DROP TABLE IF EXISTS env_vars;
+DROP TABLE IF EXISTS apps;

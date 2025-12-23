@@ -8,6 +8,31 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
+type App struct {
+	ID                   pgtype.UUID        `db:"id" json:"id"`
+	TeamID               pgtype.UUID        `db:"team_id" json:"team_id"`
+	Name                 string             `db:"name" json:"name"`
+	Slug                 string             `db:"slug" json:"slug"`
+	GithubRepo           pgtype.Text        `db:"github_repo" json:"github_repo"`
+	GithubBranch         pgtype.Text        `db:"github_branch" json:"github_branch"`
+	GithubInstallationID pgtype.Int8        `db:"github_installation_id" json:"github_installation_id"`
+	FlyAppID             pgtype.Text        `db:"fly_app_id" json:"fly_app_id"`
+	Region               pgtype.Text        `db:"region" json:"region"`
+	AutoDeploy           pgtype.Bool        `db:"auto_deploy" json:"auto_deploy"`
+	CreatedAt            pgtype.Timestamptz `db:"created_at" json:"created_at"`
+	UpdatedAt            pgtype.Timestamptz `db:"updated_at" json:"updated_at"`
+}
+
+type EnvVar struct {
+	ID             pgtype.UUID        `db:"id" json:"id"`
+	AppID          pgtype.UUID        `db:"app_id" json:"app_id"`
+	Key            string             `db:"key" json:"key"`
+	ValueEncrypted []byte             `db:"value_encrypted" json:"value_encrypted"`
+	Nonce          []byte             `db:"nonce" json:"nonce"`
+	CreatedAt      pgtype.Timestamptz `db:"created_at" json:"created_at"`
+	UpdatedAt      pgtype.Timestamptz `db:"updated_at" json:"updated_at"`
+}
+
 type GithubInstallation struct {
 	ID             pgtype.UUID        `db:"id" json:"id"`
 	TeamID         pgtype.UUID        `db:"team_id" json:"team_id"`

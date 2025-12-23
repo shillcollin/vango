@@ -1,0 +1,25 @@
+package components
+
+templ SlugPreviewAvailable(slug string) {
+	<p class="text-sm text-green-600">
+		<span class="font-medium">{ slug }</span>.rhone.app is available
+	</p>
+}
+
+templ SlugPreviewTaken(slug string) {
+	<p class="text-sm text-red-600">
+		<span class="font-medium">{ slug }</span>.rhone.app is already taken
+	</p>
+}
+
+templ SlugPreviewInvalid(slug, errMsg string) {
+	<p class="text-sm text-red-600">
+		Invalid slug: { errMsg }
+	</p>
+}
+
+templ SlugPreviewEmpty() {
+	<p class="text-sm text-gray-400">
+		Enter an app name to see the URL
+	</p>
+}
