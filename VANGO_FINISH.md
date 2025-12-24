@@ -3202,3 +3202,819 @@ module.exports = {
 *End of Specification*
 
 
+# Vango CLI Scaffold Specification
+
+> **Status**: FINAL — Ready for Implementation  
+> **Version**: 1.0  
+> **Date**: December 2024
+
+---
+
+## 1. Overview
+
+This document specifies exactly what the Vango CLI should generate. It resolves all design tensions identified during review and is ready for engineering implementation.
+
+---
+
+## 2. Locked Design Decisions
+
+| Decision | Resolution | Rationale |
+|----------|------------|-----------|
+| **Package naming** | Directory name = package name | Go-idiomatic; avoids toolchain conflicts |
+| **Middleware location** | `_middleware.go` (separate file) | Separates request logic from UI composition |
+| **Layout location** | `_layout.go` in route directories only | Colocation; no separate `layouts/` directory |
+| **Domain layer** | Not enforced | Stay minimal; `store/` and `db/` suffice for 90% of apps |
+| **CLI scaffold command** | `vango create <name>` | Matches Architecture Guide |
+| **VangoUI init** | `vango add init` | Distinct from project scaffolding |
+| **CSS location** | `public/styles.css` | Single static assets directory |
+| **Package collision** | Explicit import aliasing | Go-idiomatic solution |
+
+---
+
+## 3. Directory Structure
+
+```
+my-app/
+├── app/
+│   ├── routes/                        # File-based routing
+│   │   ├── _layout.go                 # package routes — Root UI wrapper
+│   │   ├── index.go                   # package routes — Home page (/)
+│   │   ├── about.go                   # package routes — About page (/about)
+│   │   ├── admin/
+│   │   │   ├── _middleware.go         # package admin — Auth guards
+│   │   │   ├── _layout.go             # package admin — Admin UI wrapper
+│   │   │   └── index.go               # package admin — /admin
+│   │   └── api/
+│   │       └── health.go              # package api — /api/health
+│   ├── components/                    # Shared UI components
+│   │   ├── shared/                    # package shared — Cross-domain components
+│   │   │   ├── navbar.go
+│   │   │   └── footer.go
+│   │   └── ui/                        # package ui — VangoUI primitives
+│   │       └── .gitkeep               # Populated by `vango add`
+│   ├── store/                         # Shared state
+│   │   └── .gitkeep                   # package store
+│   └── middleware/                    # Middleware definitions
+│       └── auth.go                    # package middleware
+├── db/                                # Data access layer
+│   └── .gitkeep                       # package db
+├── public/                            # Static assets
+│   ├── favicon.ico
+│   └── styles.css
+├── main.go                            # Entry point
+├── go.mod
+├── go.sum
+└── vango.json                         # Vango configuration
+```
+
+---
+
+## 4. Scaffolded File Contents
+
+### 4.1 `main.go`
+
+```go
+package main
+
+import (
+	"log"
+	"net/http"
+	"time"
+
+	"github.com/vango-dev/vango"
+	_ "my-app/app/routes" // Route registration via init()
+)
+
+func main() {
+	app := vango.New(vango.Config{
+		Dev: true, // Disable in production
+		Session: vango.SessionConfig{
+			ResumeWindow: 30 * time.Second,
+			// Store: vango.RedisStore(...), // Enable for production
+		},
+	})
+
+	log.Println("🚀 Vango server starting on http://localhost:3000")
+	if err := http.ListenAndServe(":3000", app.Handler()); err != nil {
+		log.Fatal(err)
+	}
+}
+```
+
+### 4.2 `app/routes/_layout.go`
+
+```go
+package routes
+
+import (
+	"github.com/vango-dev/vango"
+	. "github.com/vango-dev/vango/el"
+
+	"my-app/app/components/shared"
+)
+
+// Layout wraps all routes in this directory and subdirectories
+func Layout(ctx vango.Ctx, children vango.Slot) *vango.VNode {
+	return Html(Lang("en"),
+		Head(
+			Meta(Charset("utf-8")),
+			Meta(Name("viewport"), Content("width=device-width, initial-scale=1")),
+			Title(Text("My Vango App")),
+			Link(Rel("stylesheet"), Href("/styles.css")),
+			Link(Rel("icon"), Href("/favicon.ico")),
+		),
+		Body(
+			shared.Navbar(),
+			Main(Class("container"), children),
+			shared.Footer(),
+			vango.Scripts(), // Thin client (~12KB)
+		),
+	)
+}
+```
+
+### 4.3 `app/routes/index.go`
+
+```go
+package routes
+
+import (
+	"github.com/vango-dev/vango"
+	. "github.com/vango-dev/vango/el"
+)
+
+// Page is the home page component
+func Page(ctx vango.Ctx) vango.Component {
+	return vango.Func(func() *vango.VNode {
+		count := vango.Signal(0)
+
+		return Div(Class("hero"),
+			H1(Text("Welcome to Vango")),
+			P(Text("Server-driven UI for Go")),
+
+			Div(Class("counter"),
+				Button(OnClick(count.Dec), Text("-")),
+				Span(Textf(" %d ", count())),
+				Button(OnClick(count.Inc), Text("+")),
+			),
+		)
+	})
+}
+```
+
+### 4.4 `app/routes/about.go`
+
+```go
+package routes
+
+import (
+	"github.com/vango-dev/vango"
+	. "github.com/vango-dev/vango/el"
+)
+
+// Page is the about page (stateless, returns VNode directly)
+func Page(ctx vango.Ctx) *vango.VNode {
+	return Div(Class("about"),
+		H1(Text("About")),
+		P(Text("Built with Vango — the Go framework for modern web apps.")),
+		Ul(
+			Li(Text("Server-driven architecture")),
+			Li(Text("~12KB client runtime")),
+			Li(Text("Direct database access")),
+			Li(Text("Type-safe components")),
+		),
+	)
+}
+```
+
+### 4.5 `app/routes/admin/_middleware.go`
+
+```go
+package admin
+
+import (
+	"github.com/vango-dev/vango/router"
+
+	"my-app/app/middleware"
+)
+
+// Middleware applies to all routes in /admin/*
+var Middleware = []router.Middleware{
+	middleware.RequireAuth,
+}
+```
+
+### 4.6 `app/routes/admin/_layout.go`
+
+```go
+package admin
+
+import (
+	"github.com/vango-dev/vango"
+	. "github.com/vango-dev/vango/el"
+)
+
+// Layout wraps all admin routes
+func Layout(ctx vango.Ctx, children vango.Slot) *vango.VNode {
+	return Div(Class("admin-layout flex"),
+		Nav(Class("admin-sidebar"),
+			A(Href("/admin"), Text("Dashboard")),
+			A(Href("/admin/users"), Text("Users")),
+			A(Href("/admin/settings"), Text("Settings")),
+		),
+		Div(Class("admin-content flex-1 p-4"),
+			children,
+		),
+	)
+}
+```
+
+### 4.7 `app/routes/admin/index.go`
+
+```go
+package admin
+
+import (
+	"github.com/vango-dev/vango"
+	. "github.com/vango-dev/vango/el"
+)
+
+// Page is the admin dashboard
+func Page(ctx vango.Ctx) *vango.VNode {
+	return Div(
+		H1(Text("Admin Dashboard")),
+		P(Textf("Welcome, %s", ctx.User().Name)),
+	)
+}
+```
+
+### 4.8 `app/routes/api/health.go`
+
+```go
+package api
+
+import "github.com/vango-dev/vango"
+
+// HealthResponse is the JSON response for health checks
+type HealthResponse struct {
+	Status  string `json:"status"`
+	Version string `json:"version"`
+}
+
+// GET handles GET /api/health
+func GET(ctx vango.Ctx) (*HealthResponse, error) {
+	return &HealthResponse{
+		Status:  "ok",
+		Version: "1.0.0",
+	}, nil
+}
+```
+
+### 4.9 `app/components/shared/navbar.go`
+
+```go
+package shared
+
+import (
+	. "github.com/vango-dev/vango/el"
+	"github.com/vango-dev/vango"
+)
+
+// Navbar renders the site navigation
+func Navbar() *vango.VNode {
+	return Nav(Class("navbar"),
+		A(Href("/"), Class("logo"), Text("MyApp")),
+		Div(Class("nav-links"),
+			A(Href("/"), Text("Home")),
+			A(Href("/about"), Text("About")),
+		),
+	)
+}
+```
+
+### 4.10 `app/components/shared/footer.go`
+
+```go
+package shared
+
+import (
+	. "github.com/vango-dev/vango/el"
+	"github.com/vango-dev/vango"
+)
+
+// Footer renders the site footer
+func Footer() *vango.VNode {
+	return Footer(Class("footer"),
+		P(Text("Built with Vango")),
+	)
+}
+```
+
+### 4.11 `app/middleware/auth.go`
+
+```go
+package middleware
+
+import (
+	"github.com/vango-dev/vango"
+	"github.com/vango-dev/vango/router"
+)
+
+// RequireAuth redirects unauthenticated users to login
+func RequireAuth(next router.Handler) router.Handler {
+	return func(ctx vango.Ctx) error {
+		if ctx.User() == nil {
+			ctx.Redirect("/login")
+			return nil
+		}
+		return next(ctx)
+	}
+}
+```
+
+### 4.12 `vango.json`
+
+```json
+{
+  "name": "my-app",
+  "version": "0.1.0",
+  "port": 3000,
+
+  "paths": {
+    "routes": "app/routes",
+    "components": "app/components",
+    "ui": "app/components/ui",
+    "store": "app/store",
+    "middleware": "app/middleware"
+  },
+
+  "dev": {
+    "watch": ["app", "db", "public"],
+    "hotReload": true
+  },
+
+  "tailwind": {
+    "enabled": false,
+    "config": "tailwind.config.js",
+    "input": "public/styles.css"
+  }
+}
+```
+
+### 4.13 `public/styles.css`
+
+```css
+/* Base styles — replace with Tailwind via `vango create --with-tailwind` */
+:root {
+  --background: #ffffff;
+  --foreground: #171717;
+  --primary: #2563eb;
+  --muted: #f5f5f5;
+  --border: #e5e5e5;
+}
+
+* {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+body {
+  font-family: system-ui, -apple-system, sans-serif;
+  background: var(--background);
+  color: var(--foreground);
+  line-height: 1.6;
+}
+
+.container {
+  max-width: 1200px;
+  margin: 0 auto;
+  padding: 2rem;
+}
+
+/* Navbar */
+.navbar {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 1rem 2rem;
+  border-bottom: 1px solid var(--border);
+}
+
+.navbar .logo {
+  font-weight: 700;
+  font-size: 1.25rem;
+  text-decoration: none;
+  color: inherit;
+}
+
+.nav-links {
+  display: flex;
+  gap: 1.5rem;
+}
+
+.nav-links a {
+  text-decoration: none;
+  color: inherit;
+}
+
+.nav-links a:hover {
+  color: var(--primary);
+}
+
+/* Hero */
+.hero {
+  text-align: center;
+  padding: 4rem 0;
+}
+
+.hero h1 {
+  font-size: 3rem;
+  margin-bottom: 0.5rem;
+}
+
+.hero p {
+  color: #666;
+  margin-bottom: 2rem;
+}
+
+/* Counter */
+.counter {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.counter button {
+  width: 2.5rem;
+  height: 2.5rem;
+  font-size: 1.25rem;
+  border: 1px solid var(--border);
+  border-radius: 0.375rem;
+  background: var(--background);
+  cursor: pointer;
+}
+
+.counter button:hover {
+  background: var(--muted);
+}
+
+.counter span {
+  min-width: 3rem;
+  text-align: center;
+  font-size: 1.5rem;
+  font-weight: 600;
+}
+
+/* Footer */
+.footer {
+  text-align: center;
+  padding: 2rem;
+  color: #666;
+  font-size: 0.875rem;
+}
+
+/* Admin Layout */
+.admin-layout {
+  min-height: calc(100vh - 120px);
+}
+
+.admin-sidebar {
+  width: 240px;
+  background: var(--muted);
+  padding: 1rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.admin-sidebar a {
+  padding: 0.5rem 1rem;
+  text-decoration: none;
+  color: inherit;
+  border-radius: 0.375rem;
+}
+
+.admin-sidebar a:hover {
+  background: var(--border);
+}
+
+/* Connection state (built-in) */
+.vango-reconnecting::after {
+  content: "Reconnecting...";
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  padding: 0.5rem;
+  background: #fbbf24;
+  text-align: center;
+  font-size: 0.875rem;
+  z-index: 9999;
+}
+
+.vango-disconnected::after {
+  content: "Connection lost";
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  padding: 0.5rem;
+  background: #ef4444;
+  color: white;
+  text-align: center;
+  font-size: 0.875rem;
+  z-index: 9999;
+}
+```
+
+### 4.14 `.gitignore`
+
+```gitignore
+# Binaries
+/my-app
+/dist/
+*.exe
+*.dll
+*.so
+*.dylib
+
+# Dependencies
+/vendor/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Test
+coverage.out
+*.cover
+
+# Vango
+.vango/
+*_gen.go
+```
+
+### 4.15 `README.md`
+
+```markdown
+# my-app
+
+A web application built with [Vango](https://vango.dev).
+
+## Quick Start
+
+```bash
+# Development server with hot reload
+vango dev
+
+# Open http://localhost:3000
+```
+
+## Commands
+
+```bash
+vango dev                    # Start dev server
+vango build                  # Production build
+vango test                   # Run tests
+
+vango gen route users/[id]   # Generate route
+vango gen component Card     # Generate component
+
+vango add button             # Add VangoUI component
+```
+
+## Project Structure
+
+```
+app/
+├── routes/         # File-based routing (pages, layouts, middleware)
+├── components/     # Shared UI components
+├── store/          # Shared state (SharedSignal, GlobalSignal)
+└── middleware/     # Middleware definitions
+db/                 # Database layer
+public/             # Static assets
+```
+
+## Learn More
+
+- [Documentation](https://docs.vango.dev)
+- [API Reference](https://pkg.go.dev/github.com/vango-dev/vango)
+- [Examples](https://github.com/vango-dev/examples)
+```
+
+---
+
+## 5. CLI Command Reference
+
+### 5.1 Project Scaffolding
+
+```bash
+vango create <name>                    # Standard scaffold
+vango create <name> --minimal          # Minimal (no admin, components)
+vango create <name> --with-tailwind    # Include Tailwind CSS setup
+vango create <name> --with-db=sqlite   # Include database layer
+vango create <name> --with-db=postgres # Include PostgreSQL setup
+```
+
+### 5.2 Generators
+
+```bash
+# Routes
+vango gen route <path>                 # Generate page route
+vango gen route projects/[id]          # → app/routes/projects/[id].go (package projects)
+vango gen route admin/users/[id]/edit  # → app/routes/admin/users/[id]/edit.go
+
+# API Routes
+vango gen api <path>                   # Generate API route
+vango gen api users                    # → app/routes/api/users.go (package api)
+
+# Components
+vango gen component <path>             # Generate component
+vango gen component Card               # → app/components/card.go (package components)
+vango gen component marketing/Hero     # → app/components/marketing/hero.go (package marketing)
+vango gen component admin/DataTable    # → app/components/admin/data_table.go (package admin)
+
+# Store
+vango gen store <name>                 # Generate store file
+vango gen store cart                   # → app/store/cart.go
+
+# Middleware
+vango gen middleware <name>            # Generate middleware
+vango gen middleware ratelimit         # → app/middleware/ratelimit.go
+```
+
+### 5.3 VangoUI
+
+```bash
+vango add init                         # Initialize VangoUI (prompts for config)
+vango add init --path=lib/ui           # Set custom UI path
+
+vango add <component>                  # Download component to configured path
+vango add button                       # → app/components/ui/button.go
+vango add card dialog toast            # Multiple at once
+vango add button --path=design/atoms   # Override path (updates vango.json)
+
+vango add --list                       # List available components
+vango add --check                      # Check for updates
+```
+
+### 5.4 Development
+
+```bash
+vango dev                              # Start dev server with hot reload
+vango dev --port=8080                  # Custom port
+
+vango build                            # Production build
+vango build --output=./bin             # Custom output directory
+
+vango test                             # Run tests
+vango test --coverage                  # With coverage report
+```
+
+---
+
+## 6. Route Generator Logic
+
+When `vango gen route projects/[id]` is run:
+
+### 6.1 File Generation
+
+**Creates:** `app/routes/projects/[id].go`
+
+```go
+package projects
+
+import (
+	"github.com/vango-dev/vango"
+	. "github.com/vango-dev/vango/el"
+)
+
+// Params is auto-generated from filename [id].go
+type Params struct {
+	ID int `param:"id"`
+}
+
+// Page handles /projects/:id
+func Page(ctx vango.Ctx, p Params) vango.Component {
+	return vango.Func(func() *vango.VNode {
+		return Div(
+			H1(Textf("Project %d", p.ID)),
+			// TODO: Implement
+		)
+	})
+}
+```
+
+### 6.2 Param Type Inference
+
+| Filename | Param Type | Rationale |
+|----------|------------|-----------|
+| `[id].go` | `int` | Default for `id` suffix |
+| `[slug].go` | `string` | Default |
+| `[uuid].go` | `string` | UUIDs are strings |
+| `[...path].go` | `[]string` | Catch-all route |
+
+### 6.3 Route Registration
+
+The `vango dev` watcher (or `vango gen routes`) produces a glue file:
+
+**Creates:** `app/routes_gen.go`
+
+```go
+// Code generated by vango. DO NOT EDIT.
+package routes
+
+import (
+	"github.com/vango-dev/vango/router"
+
+	"my-app/app/routes/admin"
+	"my-app/app/routes/api"
+	"my-app/app/routes/projects"
+)
+
+func init() {
+	router.Register("/", Page, Layout)
+	router.Register("/about", AboutPage, Layout)
+	router.Register("/admin", admin.Page, admin.Layout, admin.Middleware...)
+	router.Register("/api/health", api.HealthGET)
+	router.Register("/projects/:id", projects.Page, Layout)
+}
+```
+
+---
+
+## 7. Handling Package Collisions
+
+### The Collision
+
+- `app/routes/admin/` → `package admin`
+- `app/components/admin/` → `package admin`
+
+### The Solution
+
+Use import aliasing. This is idiomatic Go.
+
+```go
+// app/routes/admin/index.go
+package admin
+
+import (
+	"github.com/vango-dev/vango"
+	. "github.com/vango-dev/vango/el"
+
+	// Alias the components package
+	adminui "my-app/app/components/admin"
+)
+
+func Page(ctx vango.Ctx) vango.Component {
+	return vango.Func(func() *vango.VNode {
+		return Div(
+			H1(Text("Admin Dashboard")),
+			adminui.DataTable(users),  // Use aliased import
+		)
+	})
+}
+```
+
+### Documentation Guidance
+
+The generated `README.md` and `vango gen` output should include a comment suggesting the alias pattern when a collision is detected.
+
+---
+
+## 8. Implementation Checklist
+
+### Phase 1: Core CLI
+- [ ] `vango create <name>` — Full scaffold generation
+- [ ] `vango create --minimal` — Minimal scaffold
+- [ ] `vango dev` — Dev server with hot reload
+- [ ] `vango build` — Production build
+
+### Phase 2: Generators
+- [ ] `vango gen route <path>` — Route generation with param inference
+- [ ] `vango gen api <path>` — API route generation
+- [ ] `vango gen component <path>` — Component generation
+- [ ] `vango gen routes` — Glue file generation
+
+### Phase 3: VangoUI
+- [ ] `vango add init` — Initialize UI config
+- [ ] `vango add <component>` — Download from registry
+- [ ] Component dependency resolution
+- [ ] `vango.json` path persistence
+
+### Phase 4: Enhancements
+- [ ] `vango create --with-tailwind`
+- [ ] `vango create --with-db=*`
+- [ ] `vango test`
+- [ ] Collision detection and alias suggestions
+
+---
+
+*End of Specification*

@@ -31,11 +31,11 @@ Client applies patches to DOM → User sees update (~50-100ms total)
 
 ```
 /Users/collinshill/Documents/vango/
-├── VANGO_ARCHITECTURE_AND_GUIDE.md   # THE authoritative spec (5800+ lines)
+├── VANGO_ARCHITECTURE_AND_GUIDE.md   # THE authoritative spec (7000+ lines)
 ├── CLAUDE.md                          # This file
 ├── vango/                             # V1 implementation (reference only, was never launched)
 └── vango_v2/                          # V2 implementation (active development)
-    └── docs/
+    └── build_docs/
         ├── BUILD_ROADMAP.md           # Phases, milestones, dependencies
         ├── PHASE_01_CORE.md           # Reactive system (Signal, Memo, Effect)
         ├── PHASE_02_VDOM.md           # Virtual DOM and diffing
@@ -45,7 +45,14 @@ Client applies patches to DOM → User sees update (~50-100ms total)
         ├── PHASE_06_SSR.md            # Server-side rendering
         ├── PHASE_07_ROUTING.md        # File-based routing
         ├── PHASE_08_FEATURES.md       # Forms, Resources, Hooks, etc.
-        └── PHASE_09_DX.md             # CLI, hot reload, error messages
+        ├── PHASE_09_DX.md             # Developer experience basics
+        ├── PHASE_10.md                # Routing, Middleware, Authentication
+        ├── PHASE_11.md                # Security Hardening
+        ├── PHASE_12.md                # Session Resilience & State Persistence
+        ├── PHASE_13.md                # Production Hardening & Observability (OTel, Prometheus)
+        ├── PHASE_14.md                # CLI Scaffold Specification (vango create, vango gen)
+        ├── PHASE_15.md                # VangoUI Component System
+        └── PHASE_16.md                # Unified Context & Platform Capabilities
 ```
 
 ---
@@ -118,9 +125,27 @@ Phase 1: Reactive Core (Signal, Memo, Effect)
                         └── Phase 6: SSR & Hydration
                              └── Phase 7: Routing
                                   └── Phase 8: Higher-Level Features
-                                       └── Phase 9: Developer Experience [DONE THROUGH HERE]
-                                            └── Phase 10: Production Hardening
+                                       └── Phase 9: Developer Experience
+                                            └── Phase 10: Middleware, Auth, Router
+                                                 └── Phase 11: Security Hardening
+                                                      └── Phase 12: Session Resilience & Persistence <- We are here
+                                                           └── Phase 13: Production Hardening (OTel, Prometheus)
+                                                                └── Phase 14: CLI & Scaffold
+                                                                     └── Phase 15: VangoUI Component System
+                                                                          └── Phase 16: Unified Context (Async, Client, Sync)
 ```
+
+### V2.1 Release Track
+
+Phases 12-16 complete the V2.1 release with production-grade features:
+
+| Phase | Focus | Key Features |
+|-------|-------|-------------|
+| 12 | Resilience | SessionStore, LRU eviction, reconnect UX, URLParam 2.0 |
+| 13 | Observability | OpenTelemetry middleware, Prometheus metrics, fuzz testing |
+| 14 | DX | `vango create`, `vango gen`, `vango dev`, route generator |
+| 15 | Components | VangoUI, functional options API, client hooks |
+| 16 | Platform | `ctx.Async`, `ctx.Client`, `ctx.Sync`, NATS JetStream |
 
 ### Current Status
 Check `vango_v2/docs/BUILD_ROADMAP.md` for current phase status and next steps.
@@ -232,4 +257,4 @@ Before implementing anything:
 
 ---
 
-*Last Updated: 2024-12-06*
+*Last Updated: 2024-12-24*
