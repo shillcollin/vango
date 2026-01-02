@@ -48,6 +48,13 @@ status: RFC
 
 ---
 
+## Document Conventions
+
+This guide mixes **normative specification** with **informative explanation**.
+
+- **Normative** statements use RFC 2119 keywords: **MUST**, **MUST NOT**, **SHOULD**, **SHOULD NOT**, **MAY**.
+- **Informative** sections include rationale, examples, and pseudocode. Code blocks labeled “simplified” are illustrative and may omit edge cases.
+
 ## 1. Vision & Philosophy
 
 ### 1.1 The Problem with Modern Web Development
@@ -206,10 +213,10 @@ The same component code works in all modes:
 ```go
 func Counter(initial int) vango.Component {
     return vango.Func(func() *vango.VNode {
-        count := vango.Signal(initial)
+        count := vango.NewSignal(initial)
 
         return Div(Class("counter"),
-            H1(Textf("Count: %d", count())),
+            H1(Textf("Count: %d", count.Get())),
             Button(OnClick(count.Inc), Text("+")),
             Button(OnClick(count.Dec), Text("-")),
         )
@@ -231,13 +238,71 @@ func Counter(initial int) vango.Component {
 
 Vango has five core concepts:
 
+| Concept | Current Go API | Description |
+|---------|----------------|-------------|
+| **Signal** | `vango.NewSignal(...)` | Reactive state; read via `.Get()` |
+| **Memo** | `vango.NewMemo(...)` | Derived state/calculations |
+| **Effect** | `vango.Effect(...)` | Side effects and async work |
+| **Element** | `el.Div(...)`, etc. | UI structure via DSL |
+| **Component**| `vango.Func(...)` | Composition and state encapsulation |
+
 | Concept | Purpose | Example |
 |---------|---------|---------|
 | **Element** | UI structure | `Div(Class("card"), ...)` |
-| **Signal** | Reactive state | `count := vango.Signal(0)` |
-| **Memo** | Derived state | `doubled := vango.Memo(...)` |
+| **Signal** | Reactive state | `count := vango.NewSignal(0)` |
+| **Memo** | Derived state | `doubled := vango.NewMemo(...)` |
 | **Effect** | Side effects | `vango.Effect(func() {...})` |
 | **Component** | Composition | `func Card() vango.Component` |
+
+Additional first-class primitives: **Resource** (async state) and **Ref** (client-only handles).
+
+### 3.1.1 Runtime Context (`Ctx`)
+
+Many APIs in this guide (navigation, dispatching work back onto the session loop, URL query state, toasts, etc.) require an active **runtime context**.
+
+Vango provides runtime context in two ways:
+
+1. **Ctx parameter**: routing entrypoints receive a `ctx vango.Ctx` parameter (e.g. `func Page(ctx vango.Ctx, ...) *vango.VNode`).
+2. **Ambient access inside render/effect/handlers**: within `vango.Func` render closures, effects, and event handlers, you can retrieve the current context:
+
+```go
+// UseCtx returns the current runtime context for the active session tick.
+// It MUST only be called during a component render, effect, or event handler.
+func vango.UseCtx() vango.Ctx
+```
+
+If you need a `ctx` inside a render/effect closure, prefer `ctx := vango.UseCtx()` rather than relying on an unscoped global.
+
+### 3.1.2 Rules of Render (Pit of Success)
+
+Render functions (`vango.Func(func() *vango.VNode { ... })`) are the hot path and must be predictable.
+
+Normative rules:
+- Render MUST be pure: no blocking I/O, no goroutine creation (goroutines are fine in effects/handlers), and no non-deterministic reads (time, randomness, global mutable state) unless explicitly modeled as state.
+- Render MUST NOT write signals (no `Set/Update/Inc/...`) because it can create re-entrant update loops.
+- Event handlers (e.g. `OnClick`) are where signal writes SHOULD happen for user interactions.
+- Effects (`vango.Effect`) are where side effects SHOULD happen; long-running work MUST be done off the session loop (see §3.9.6).
+- Prefer `sig.Peek()` / `vango.Untracked` for analytics/logging reads to avoid accidental reactive dependencies.
+
+### 3.1.3 Hook-Order Semantics for Render-Time Stateful Primitives
+
+Any API that allocates component-scoped state during render MUST obey hook-order semantics. This includes: `NewSignal`, `NewMemo`, `Effect`, `NewResource`, `NewResourceKeyed`, `NewRef`, `URLParam`, `UseForm`, `CreateContext.Use()`, and lifecycle hooks (`OnMount`, `OnUnmount`, `OnUpdate`).
+
+**Normative Rule**: In a given component’s render function, the sequence of hook calls MUST be identical on every render tick. Hooks MUST NOT be called conditionally or inside loops whose iteration count depends on reactive state.
+
+**Clarifications**:
+- `vango.Effect` is a render-time hook (it allocates managed effect state). It MUST only be called during render and MUST obey ordering.
+- `CreateContext.Use()` is a reactive hook: it subscribes the component to the nearest provider. It MUST obey hook-order semantics.
+- Lifecycle hooks (`OnMount`, etc.) are hook-order primitives.
+
+This requires a stable “slot” model:
+- Within a given component instance, hook calls MUST occur in the same order on every render.
+- Hook calls MUST NOT be conditional (inside `if`, `switch` cases with early returns, or data-dependent branches) and MUST NOT occur in loops with variable iteration counts.
+- Violations SHOULD produce a dev-mode error such as: “Hook order changed (Signal/Memo/Effect/Resource/Ref/Form/Param/Lifecycle)”.
+
+Conditional rendering / early returns are allowed as long as all hook-creating calls occur unconditionally before the branch.
+
+This rule is why patterns like “don’t read signals conditionally” and “use `Key(...)` for lists” matter: they preserve identity and stability for both DOM reconciliation and per-component reactive state.
 
 ### 3.2 Elements
 
@@ -283,33 +348,35 @@ Signals are reactive values that trigger re-renders when changed:
 func Counter(initial int) vango.Component {
     return vango.Func(func() *vango.VNode {
         // Create a signal
-        count := vango.Signal(initial)
+        count := vango.NewSignal(initial)
 
         // Read the value (subscribes this component)
-        currentValue := count()
+        currentValue := count.Get()
 
         // Update the value (triggers re-render)
         increment := func() {
-            count.Set(count() + 1)
+            count.Set(count.Get() + 1)
         }
 
         return Div(
-            Text(fmt.Sprintf("Count: %d", count())),
+            Text(fmt.Sprintf("Count: %d", count.Get())),
             Button(OnClick(increment), Text("+")),
         )
     })
 }
 ```
 
+> **Go API Design Note**: To follow Go’s naming constraints (where a type and a function cannot share a name in the same package), Vango uses the `New*` prefix for all signal and state constructors. Additionally, signal values are accessed via an explicit `.Get()` method to distinguish them from function calls and to enable precise reactivity tracking.
+
 **Signal API:**
 ```go
 // Create
-count := vango.Signal(0)           // Signal[int]
-user := vango.Signal[*User](nil)   // Signal[*User]
-items := vango.Signal([]Item{})    // Signal[[]Item]
+count := vango.NewSignal(0)           // Signal[int]
+user := vango.NewSignal[*User](nil)            // Signal[*User]
+items := vango.NewSignal([]Item{})    // Signal[[]Item]
 
 // Read (subscribes component to changes)
-value := count()
+value := count.Get()
 
 // Write
 count.Set(5)
@@ -328,34 +395,34 @@ Memos are cached computations that update when dependencies change:
 ```go
 func ShoppingCart() vango.Component {
     return vango.Func(func() *vango.VNode {
-        items := vango.Signal([]CartItem{})
-        taxRate := vango.Signal(0.08)
+        items := vango.NewSignal([]CartItem{})
+        taxRate := vango.NewSignal(0.08)
 
-        // Recomputes only when items() changes
-        subtotal := vango.Memo(func() float64 {
+        // Recomputes only when items.Get() changes
+        subtotal := vango.NewMemo(func() float64 {
             total := 0.0
-            for _, item := range items() {
+            for _, item := range items.Get() {
                 total += item.Price * float64(item.Qty)
             }
             return total
         })
 
-        // Recomputes when subtotal() or taxRate() changes
-        tax := vango.Memo(func() float64 {
-            return subtotal() * taxRate()
+        // Recomputes when subtotal.Get() or taxRate.Get() changes
+        tax := vango.NewMemo(func() float64 {
+            return subtotal.Get() * taxRate.Get()
         })
 
         // Memos can depend on other memos
-        total := vango.Memo(func() float64 {
-            return subtotal() + tax()
+        total := vango.NewMemo(func() float64 {
+            return subtotal.Get() + tax.Get()
         })
 
         return Div(
             CartItems(items),
             Div(Class("totals"),
-                Row("Subtotal", subtotal()),
-                Row("Tax", tax()),
-                Row("Total", total()),
+                Row("Subtotal", subtotal.Get()),
+                Row("Tax", tax.Get()),
+                Row("Total", total.Get()),
             ),
         )
     })
@@ -369,35 +436,61 @@ Effects run after render and handle side effects:
 ```go
 func UserProfile(userID int) vango.Component {
     return vango.Func(func() *vango.VNode {
-        user := vango.Signal[*User](nil)
-        loading := vango.Signal(true)
+        ctx := vango.UseCtx()
+        user := vango.NewSignal[*User](nil)
+        loading := vango.NewSignal(true)
+        loadErr := vango.NewSignal[error](nil)
 
         // Effect runs after mount, and when dependencies change
         vango.Effect(func() vango.Cleanup {
             loading.Set(true)
+            loadErr.Set(nil)
 
-            // Direct database access! (server-driven mode)
-            u, err := db.Users.FindByID(userID)
-            if err != nil {
-                // Handle error...
-            }
+            // Do blocking I/O off the session loop.
+            cctx, cancel := context.WithCancel(ctx.StdContext())
+            id := userID
 
-            user.Set(u)
-            loading.Set(false)
+            go func(id int) {
+                // Best-effort cancellation: if your DB supports context, pass cctx.
+                u, err := db.Users.FindByID(cctx, id)
+                if err != nil && cctx.Err() != nil {
+                    return // cancelled; ignore
+                }
 
-            // Optional cleanup function
-            return func() {
-                // Runs before next effect or unmount
-            }
+                ctx.Dispatch(func() {
+                    if cctx.Err() != nil {
+                        return // cancelled; ignore
+                    }
+
+                    vango.TxNamed("user:load", func() {
+                        if err != nil {
+                            loadErr.Set(err)
+                            user.Set(nil)
+                        } else {
+                            user.Set(u)
+                        }
+                        loading.Set(false)
+                    })
+                })
+            }(id)
+
+            // Cleanup cancels in-flight work on dependency change / unmount.
+            return cancel
         })
 
-        if loading() {
+        if loading.Get() {
             return LoadingSpinner()
+        }
+        if loadErr.Get() != nil {
+            return ErrorMessage(loadErr.Get())
+        }
+        if user.Get() == nil {
+            return vango.Empty()
         }
 
         return Div(
-            H1(Text(user().Name)),
-            P(Text(user().Email)),
+            H1(Text(user.Get().Name)),
+            P(Text(user.Get().Email)),
         )
     })
 }
@@ -429,9 +522,9 @@ Div(
 ```go
 func Counter(initial int) vango.Component {
     return vango.Func(func() *vango.VNode {
-        count := vango.Signal(initial)
+        count := vango.NewSignal(initial)
         return Div(
-            Text(fmt.Sprintf("%d", count())),
+            Text(fmt.Sprintf("%d", count.Get())),
             Button(OnClick(count.Inc), Text("+")),
         )
     })
@@ -915,6 +1008,34 @@ Attr("x-custom", "value")   // x-custom="value"
 
 Event handlers trigger server-side callbacks or client-side behavior.
 
+#### Handler Function Signatures (Normative)
+
+Go does not support function overloading. Vango’s event helper functions (e.g. `OnClick`, `OnInput`) therefore accept `any` and resolve/validate supported handler function signatures at runtime (via type assertions / reflection).
+
+Normative rules:
+- Each event helper MUST support only a documented set of handler signatures.
+- If a handler has an unsupported signature, Vango SHOULD fail fast in dev mode with a descriptive error (and SHOULD include the event name and the unexpected type). In production it MAY ignore the handler and log an error.
+- Where “shorthand” signatures exist (e.g. `func(string)` for input), they MUST be defined as a deterministic projection of the full event payload.
+
+Supported signatures (common):
+
+| Helper | Supported handler types | Notes |
+|--------|--------------------------|------|
+| `OnClick`, `OnDblClick`, `OnMouseDown/Up/Move/Enter/Leave/Over/Out`, `OnContextMenu` | `func()` or `func(vango.MouseEvent)` | `func()` is allowed when payload is not needed. |
+| `OnWheel` | `func(vango.WheelEvent)` | |
+| `OnKeyDown`, `OnKeyUp` | `func()` or `func(vango.KeyboardEvent)` | Prefer the event form for key/modifier inspection. |
+| `OnInput`, `OnChange` | `func(string)` or `func(vango.InputEvent)` | `func(string)` receives `e.Value`. |
+| `OnSubmit` | `func()` or `func(vango.FormData)` | `FormData` contains decoded form fields. |
+| `OnScroll` | `func(vango.ScrollEvent)` | |
+| `OnDragStart/Drag/DragEnd/DragEnter/DragLeave/Drop` | `func(vango.DragEvent)` | |
+| `OnDragOver` | `func(vango.DragEvent) bool` | Return `true` to allow drop; returning `false` preserves native behavior. |
+| `OnEvent(name, ...)` (hooks) | `func(vango.HookEvent)` | Fixed signature. |
+
+Payload completeness:
+- Event structs are decoded from browser events on a best-effort basis.
+- If the browser cannot supply a field, it MUST decode as the Go zero value for that field.
+- Pointer-heavy or high-frequency event payloads (e.g. per-mousemove) SHOULD be kept small; use hooks for 60fps interactions.
+
 #### Mouse Events
 
 ```go
@@ -1263,21 +1384,33 @@ OnKeyDown(vango.KeyWithModifiers("s", vango.Ctrl|vango.Shift, func() {
 
 Signals are reactive values that trigger re-renders when changed.
 
+#### Canonical Signatures
+
+```go
+func NewSignal[T any](initial T, opts ...SignalOption) Signal[T]
+func NewSharedSignal[T any](initial T, opts ...SignalOption) Signal[T]
+func NewGlobalSignal[T any](initial T, opts ...SignalOption) Signal[T]
+```
+
+**Normative**: All three constructors return the same `Signal[T]` type. The scope (per-instance, per-session, or global) is determined by the constructor call.
+
+Signals expose methods like `Get`, `Set`, `Update`, and `Peek`.
+
 #### Creating Signals
 
 ```go
 // Basic signal with initial value
-count := vango.Signal(0)                    // Signal[int]
-name := vango.Signal("Alice")               // Signal[string]
-user := vango.Signal[*User](nil)            // Signal[*User] with nil
-items := vango.Signal([]Item{})             // Signal[[]Item]
-prefs := vango.Signal(Preferences{})        // Signal[Preferences]
+count := vango.NewSignal(0)                    // Signal[int]
+name := vango.NewSignal("Alice")               // Signal[string]
+user := vango.NewSignal[*User](nil)            // Signal[*User] with nil
+items := vango.NewSignal([]Item{})             // Signal[[]Item]
+prefs := vango.NewSignal(Preferences{})        // Signal[Preferences]
 
 // Session-scoped signal (shared within a user session)
-var CartItems = vango.SharedSignal([]CartItem{})
+var CartItems = vango.NewSharedSignal([]CartItem{})
 
 // Global signal (shared across ALL sessions)
-var OnlineUsers = vango.GlobalSignal([]User{})
+var OnlineUsers = vango.NewGlobalSignal([]User{})
 ```
 
 #### Reading Values
@@ -1285,8 +1418,8 @@ var OnlineUsers = vango.GlobalSignal([]User{})
 ```go
 // Call the signal to get current value
 // This also subscribes the current component to changes
-currentCount := count()
-userName := name()
+currentCount := count.Get()
+userName := name.Get()
 
 // Read without subscribing (rarely needed)
 value := count.Peek()
@@ -1385,7 +1518,7 @@ if count.IsDirty() {
 fmt.Println(count.SubscriberCount())
 
 // Named signals (for debugging)
-count := vango.Signal(0).Named("counter")
+count := vango.NewSignal(0).Named("counter")
 ```
 
 #### Durability & Persistence (v2.1+)
@@ -1400,13 +1533,13 @@ Signals are **persisted by default** when session serialization is enabled. Mark
 
 ```go
 // Persisted by default (in-session, and to SessionStore if configured)
-form := vango.Signal(FormData{})
+form := vango.NewSignal(FormData{})
 
 // Not persisted (cursor positions, hover state, etc.)
-cursor := vango.Signal(Point{0, 0}, vango.Transient())
+cursor := vango.NewSignal(Point{0, 0}, vango.Transient())
 
 // Stable key for serialized session data (recommended for important values)
-userID := vango.Signal(0, vango.PersistKey("user_id"))
+userID := vango.NewSignal(0, vango.PersistKey("user_id"))
 ```
 
 For **user preferences** (theme, sidebar, language) use `Pref` (see State Management) rather than signals.
@@ -1434,27 +1567,27 @@ Memos are cached computations that update when dependencies change.
 
 ```go
 // Basic memo
-doubled := vango.Memo(func() int {
-    return count() * 2  // Re-runs when count changes
+doubled := vango.NewMemo(func() int {
+    return count.Get() * 2  // Re-runs when count changes
 })
 
 // Memo depending on multiple signals
-fullName := vango.Memo(func() string {
-    return firstName() + " " + lastName()
+fullName := vango.NewMemo(func() string {
+    return firstName.Get() + " " + lastName.Get()
 })
 
 // Session-scoped memo
-var CartTotal = vango.SharedMemo(func() float64 {
+var CartTotal = vango.NewSharedMemo(func() float64 {
     total := 0.0
-    for _, item := range CartItems() {
+    for _, item := range CartItems.Get() {
         total += item.Price * float64(item.Qty)
     }
     return total
 })
 
 // Global memo
-var ActiveUserCount = vango.GlobalMemo(func() int {
-    return len(OnlineUsers())
+var ActiveUserCount = vango.NewGlobalMemo(func() int {
+    return len(OnlineUsers.Get())
 })
 ```
 
@@ -1462,7 +1595,7 @@ var ActiveUserCount = vango.GlobalMemo(func() int {
 
 ```go
 // Call to get cached value
-value := doubled()
+value := doubled.Get()
 
 // Read without subscribing
 value := doubled.Peek()
@@ -1473,18 +1606,18 @@ value := doubled.Peek()
 Memos can depend on other memos:
 
 ```go
-var FilteredItems = vango.SharedMemo(func() []Item {
-    return filterItems(Items(), Filter())
+var FilteredItems = vango.NewSharedMemo(func() []Item {
+    return filterItems(Items.Get(), Filter.Get())
 })
 
-var SortedItems = vango.SharedMemo(func() []Item {
-    return sortItems(FilteredItems(), SortOrder())
+var SortedItems = vango.NewSharedMemo(func() []Item {
+    return sortItems(FilteredItems.Get(), SortOrder.Get())
 })
 
-var PagedItems = vango.SharedMemo(func() []Item {
-    items := SortedItems()
-    start := (Page() - 1) * PageSize()
-    end := min(start + PageSize(), len(items))
+var PagedItems = vango.NewSharedMemo(func() []Item {
+    items := SortedItems.Get()
+    start := (Page.Get() - 1) * PageSize.Get()
+    end := min(start + PageSize.Get(), len(items))
     return items[start:end]
 })
 ```
@@ -1493,14 +1626,14 @@ var PagedItems = vango.SharedMemo(func() []Item {
 
 ```go
 // Equality function (for complex types)
-items := vango.Memo(func() []Item {
+items := vango.NewMemo(func() []Item {
     return fetchItems()
 }).Equals(func(a, b []Item) bool {
     return reflect.DeepEqual(a, b)
 })
 
 // Named memo (for debugging)
-total := vango.Memo(func() float64 {
+total := vango.NewMemo(func() float64 {
     return calculate()
 }).Named("cart-total")
 ```
@@ -1510,6 +1643,29 @@ total := vango.Memo(func() float64 {
 ### 3.9.6 Effect API
 
 Effects run after render and handle side effects.
+
+Effects execute on the session event loop. Long-running or blocking work (database queries, HTTP calls, filesystem access) MUST be performed off the session loop (e.g. in a goroutine), and results MUST be applied via `ctx.Dispatch(...)` (see §7.0).
+
+Effects are scheduled after commit; the runtime executes effect bodies on the session loop, so effect bodies must be short and must only schedule asynchronous work.
+
+
+Concurrency note (normative):
+- `ctx.Dispatch(...)` MUST be safe to call from any goroutine.
+- `ctx.StdContext()` MUST be safe to call from any goroutine (or safe to capture at effect start and use from goroutines).
+- Other `ctx` methods (e.g. `Navigate`, `SetUser`, direct session access) MUST NOT be assumed goroutine-safe unless explicitly documented.
+
+`ctx.StdContext()` semantics (normative):
+- `ctx.StdContext()` MUST be derived from the current session “tick” context (the handler/effect execution context for the current transaction/commit cycle).
+- `ctx.StdContext()` SHOULD carry tracing and any applicable deadlines/timeouts for the current tick.
+- When an effect cleanup runs (dependency change or unmount), the runtime MUST run the returned cleanup. If the cleanup is a `cancel` function produced by `context.WithCancel(ctx.StdContext())`, cancellation MUST propagate to in-flight work via the derived context.
+
+Cancelled vs stale (normative):
+- **Cancelled** means “this work is no longer relevant because the effect was cleaned up (dependency changed or component unmounted)”; cancelled work MUST be ignored.
+- **Stale** means “the dependency changed between starting work and applying results”; stale results MUST be ignored (typically via a `Peek()` guard).
+
+Pedagogy note:
+- If your dependency is a stable function parameter (e.g. `userID int` passed into a component instance), “stale” checks are usually unnecessary because a parameter change typically implies unmount/remount.
+- If your dependency is a signal (e.g. `userID := vango.NewSignal(...)`), capture with `id := userID.Get()` and stale-check with `if userID.Peek() != id { return }`.
 
 #### Creating Effects
 
@@ -1525,13 +1681,65 @@ vango.Effect(func() vango.Cleanup {
 
 // Effect with dependencies (runs when dependencies change)
 vango.Effect(func() vango.Cleanup {
-    fmt.Println("User changed to", userID())
+    ctx := vango.UseCtx()
+    fmt.Println("User changed to", userID.Get())
 
-    user, _ := db.Users.FindByID(userID())
-    currentUser.Set(user)
+    // Tracked: re-run effect when userID changes.
+    id := userID.Get()
 
-    return nil  // No cleanup needed
+    // Cancel any in-flight work when dependencies change/unmount.
+    cctx, cancel := context.WithCancel(ctx.StdContext())
+
+    go func(id int) {
+        // Best-effort cancellation: if your DB supports context, pass cctx.
+        u, err := db.Users.FindByID(cctx, id)
+        if err != nil && cctx.Err() != nil {
+            return // cancelled; ignore
+        }
+
+        ctx.Dispatch(func() {
+            if cctx.Err() != nil {
+                return // cancelled; ignore
+            }
+            if userID.Peek() != id {
+                return // stale result; ignore
+            }
+
+            if err != nil {
+                currentUser.Set(nil)
+                return
+            }
+            currentUser.Set(u)
+        })
+    }(id)
+
+    return cancel
 })
+
+// If your I/O library does not accept a context, you can still ignore stale results safely:
+vango.Effect(func() vango.Cleanup {
+    ctx := vango.UseCtx()
+    id := userID.Get() // tracked
+
+    go func(id int) {
+        u, err := db.Users.FindByID(id) // no ctx support
+        ctx.Dispatch(func() {
+            if userID.Peek() != id {
+                return // stale; ignore
+            }
+            if err != nil {
+                currentUser.Set(nil)
+                return
+            }
+            currentUser.Set(u)
+        })
+    }(id)
+
+    // No cancellation possible; stale suppression is still required.
+    return nil
+})
+
+Informative: to reduce boilerplate, Vango (or your application) MAY provide a small helper to standardize stale-result guards (e.g., `GuardCurrent(sig, captured)`), but the core correctness requirement is simply: “compare `sig.Peek()` against the captured value before applying results.”
 
 // Effect that runs only once (on mount)
 vango.OnMount(func() {
@@ -1556,7 +1764,8 @@ vango.OnUnmount(func() {
 ```go
 func Timer() vango.Component {
     return vango.Func(func() *vango.VNode {
-        elapsed := vango.Signal(0)
+        ctx := vango.UseCtx()
+        elapsed := vango.NewSignal(0)
 
         vango.OnMount(func() {
             fmt.Println("Timer started")
@@ -1587,12 +1796,12 @@ func Timer() vango.Component {
             fmt.Println("Timer stopped")
         })
 
-        return Div(Textf("Elapsed: %d seconds", elapsed()))
+        return Div(Textf("Elapsed: %d seconds", elapsed.Get()))
     })
 }
 ```
 
-Signal writes are single-writer (session loop). If you need goroutines/tickers, marshal state updates back via `ctx.Dispatch` (see Transactions & Snapshots).
+Signal writes are single-writer (session loop). If you need goroutines/tickers, marshal state updates back via `ctx.Dispatch` (with `ctx := vango.UseCtx()`) (see Transactions & Snapshots).
 
 #### Effect Dependencies
 
@@ -1600,14 +1809,34 @@ Effects automatically track signal dependencies:
 
 ```go
 vango.Effect(func() vango.Cleanup {
-    // This effect re-runs when userID() changes
-    user, err := fetchUser(userID())
-    if err != nil {
-        errorState.Set(err)
-        return nil
-    }
-    userData.Set(user)
-    return nil
+    // This effect re-runs when userID.Get() changes
+    ctx := vango.UseCtx()
+    id := userID.Get()
+
+    cctx, cancel := context.WithCancel(ctx.StdContext())
+    go func(id int) {
+        // Best-effort cancellation: if your fetcher supports context, pass cctx.
+        user, err := fetchUser(cctx, id)
+        if err != nil && cctx.Err() != nil {
+            return // cancelled; ignore
+        }
+
+        ctx.Dispatch(func() {
+            if cctx.Err() != nil {
+                return // cancelled; ignore
+            }
+            if userID.Peek() != id {
+                return // stale; ignore
+            }
+            if err != nil {
+                errorState.Set(err)
+                return
+            }
+            userData.Set(user)
+        })
+    }(id)
+
+    return cancel
 })
 ```
 
@@ -1617,7 +1846,7 @@ To read a signal without creating a dependency:
 
 ```go
 vango.Effect(func() vango.Cleanup {
-    userId := userID()  // Tracked - effect re-runs on change
+    userId := userID.Get()  // Tracked - effect re-runs on change
 
     vango.Untracked(func() {
         config := globalConfig()  // Not tracked
@@ -1632,18 +1861,30 @@ vango.Effect(func() vango.Cleanup {
 
 ### 3.9.7 Resource API
 
-Resources handle async data loading with loading/error/success states.
+Resources handle async data loading with loading/error/success states. **Normative**: `Resource[T]` is a pointer type (`*Resource[T]`); constructors return a stable pointer that persists across re-renders.
+
+#### Canonical Signatures
+
+```go
+// Resource fetches once and is controlled by the component lifecycle.
+func NewResource[T any](fetch func() (T, error), opts ...ResourceOption) *Resource[T]
+
+// ResourceKeyed re-fetches when the key changes.
+func NewResourceKeyed[K comparable, T any](key Signal[K], fetch func(K) (T, error), opts ...ResourceOption) *Resource[T]
+```
+
+Legacy note: earlier drafts used an overload-style shorthand `vango.Resource(key, fetch)`. Treat that as equivalent to `vango.NewResourceKeyed(key, fetch)`; only the explicit form is normative in this spec.
 
 #### Creating Resources
 
 ```go
 // Basic resource
-user := vango.Resource(func() (*User, error) {
+user := vango.NewResource(func() (*User, error) {
     return db.Users.FindByID(userID)
 })
 
 // Resource with key (re-fetches when key changes)
-user := vango.Resource(userID, func(id int) (*User, error) {
+user := vango.NewResourceKeyed(userID, func(id int) (*User, error) {
     return db.Users.FindByID(id)
 })
 
@@ -1653,7 +1894,7 @@ type PageData struct {
     Projects []Project
 }
 
-data := vango.Resource(func() (PageData, error) {
+data := vango.NewResource(func() (PageData, error) {
     user, err := db.Users.FindByID(userID)
     if err != nil {
         return PageData{}, err
@@ -1678,6 +1919,31 @@ const (
     vango.Error                         // Failed
 )
 ```
+
+#### Resource Semantics (Normative)
+
+- A `Resource` instance is component-scoped state. It MUST persist across re-renders of the same component instance (hook-order semantics; see §3.1.3).
+- Fetch execution MUST NOT block the session loop. Resources MUST run fetch work off the session loop and apply results via `ctx.Dispatch(...)`.
+- Fetch signature note: `Resource` fetchers are specified as `func() (T, error)`. If you need cancelable I/O, the closure SHOULD capture `ctx := vango.UseCtx()` and use `ctx.StdContext()` inside the fetch (e.g. `return fetch(ctx.StdContext())`). Cancellation is best-effort; stale-result suppression is required (below).
+  - Design decision: the spec prefers closure capture to keep the public API surface minimal. Vango MAY add context-aware resource fetcher signatures in a future version.
+- Start timing:
+  - A resource MAY begin fetching immediately after the first render commit (mount).
+  - A resource MUST NOT perform blocking work during render.
+- Key changes / races:
+  - If a keyed resource’s key changes while a fetch is in flight, the runtime MUST ensure stale results do not overwrite newer state.
+  - Cancellation is best-effort: the runtime MAY cancel work if the fetcher is cancelable, but at minimum it MUST ignore stale results.
+  - Cancelled vs stale: cancelled work (effect cleanup/unmount) MUST be ignored; stale results (key changed mid-flight) MUST be ignored.
+- Retry:
+  - `Retry(n, baseDelay)` MUST attempt up to `n` retries on failure.
+  - Backoff SHOULD be exponential (`baseDelay * 2^attempt`) and SHOULD include jitter to avoid thundering herds.
+  - Retries for a superseded key/fetch MUST be abandoned.
+- Staleness:
+  - `StaleTime(d)` defines the duration a Ready value is considered fresh.
+  - `Fetch()` SHOULD be a no-op while data is fresh; `Refetch()` MUST bypass staleness.
+- Dedupe/cache:
+  - By default, resources are NOT deduped across component instances. If you need sharing, use an explicit shared store (`NewSharedSignal`/`NewSharedMemo`) or an application cache layer.
+- `Mutate`:
+  - `Mutate` MUST update the local cached value immediately (optimistic/local edits) and SHOULD reset freshness so the UI does not immediately refetch unless invalidated.
 
 #### Reading Resources
 
@@ -1741,16 +2007,16 @@ user.Invalidate()
 
 ```go
 // Initial data (show while loading)
-user := vango.Resource(fetchUser).InitialData(cachedUser)
+user := vango.NewResource(fetchUser).InitialData(cachedUser)
 
 // Stale time (how long data is considered fresh)
-user := vango.Resource(fetchUser).StaleTime(5 * time.Minute)
+user := vango.NewResource(fetchUser).StaleTime(5 * time.Minute)
 
 // Retry on error
-user := vango.Resource(fetchUser).Retry(3, 1*time.Second)
+user := vango.NewResource(fetchUser).Retry(3, 1*time.Second)
 
 // On success/error callbacks
-user := vango.Resource(fetchUser).
+user := vango.NewResource(fetchUser).
     OnSuccess(func(u *User) {
         analytics.TrackUserLoad()
     }).
@@ -1765,11 +2031,25 @@ user := vango.Resource(fetchUser).
 
 Refs provide direct access to DOM elements or component instances.
 
+**Client-runtime only**
+
+`Ref[js.Value]` (and any “real DOM handle” ref) is only meaningful in **client runtimes** (WASM components and JavaScript islands). In server-driven mode, the server cannot hold DOM handles; use HIDs + patches for operations like focus/blur/scroll.
+
+Implementation note: `js.Value` comes from `syscall/js`. Server builds SHOULD keep client-only code behind build tags so server-driven applications typecheck without the WASM/JS runtime.
+
+#### Ref API Signature
+
+**Normative**: `Ref[T]` is a pointer type (`*Ref[T]`); constructors return a stable pointer.
+
+```go
+func NewRef[T any](initial T) *Ref[T]
+```
+
 #### Creating Refs
 
 ```go
 // DOM element ref
-inputRef := vango.Ref[js.Value](nil)
+inputRef := vango.NewRef[js.Value](nil)
 
 // Use in component
 Input(
@@ -1807,7 +2087,7 @@ func FancyInput(ref *vango.Ref[js.Value]) *vango.VNode {
 }
 
 // Parent usage
-inputRef := vango.Ref[js.Value](nil)
+inputRef := vango.NewRef[js.Value](nil)
 FancyInput(inputRef)
 
 vango.OnMount(func() {
@@ -1887,10 +2167,12 @@ Li(Key(item.Type, item.ID), Text(item.Name))
 Text("Hello, world!")
 
 // Textf: Formatted text
-Textf("Count: %d", count)
+Textf("Count: %d", count.Get())
 
-// Raw: Unescaped HTML (use carefully!)
-Raw("<strong>Bold</strong>")
+// DangerouslySetInnerHTML: Unescaped HTML (use carefully!)
+DangerouslySetInnerHTML("<strong>Bold</strong>")
+
+// Raw(...) is a legacy alias for DangerouslySetInnerHTML(...).
 ```
 
 #### Slots and Children
@@ -1957,9 +2239,9 @@ var UserContext = vango.CreateContext[*User](nil)
 ```go
 func App() vango.Component {
     return vango.Func(func() *vango.VNode {
-        theme := vango.Signal("dark")
+        theme := vango.NewSignal("dark")
 
-        return ThemeContext.Provider(theme(),
+        return ThemeContext.Provider(theme.Get(),
             Header(),
             Main(),
             Footer(),
@@ -2184,6 +2466,14 @@ func OrderFormPage() vango.Component {
 
 Synchronize reactive state with **URL query parameters** (not path params). This enables shareable URLs, back-button friendly filters/search, and SSR-friendly state hydration.
 
+#### Canonical Signatures
+
+```go
+func URLParam[T any](key string, def T, opts ...URLParamOption) Signal[T]
+```
+
+`URLParam` is scoped to the current route and session. It MUST be called during render/effect/handler execution (i.e. when `vango.UseCtx()` is available).
+
 #### Basic Usage
 
 ```go
@@ -2198,10 +2488,10 @@ func ProductList(ctx vango.Ctx) vango.Component {
         return Div(
             Input(
                 Type("search"),
-                Value(search()),
+                Value(search.Get()),
                 OnInput(search.Set),
             ),
-            Pagination(page(), page.Set),
+            Pagination(page.Get(), page.Set),
         )
     })
 }
@@ -2362,6 +2652,10 @@ In v2.2+, the event loop runs each handler (and other scheduled work) inside an 
 
 The protocol is optimized for minimal bandwidth:
 
+**Handshake framing**
+
+The initial WebSocket handshake is sent as a UTF-8 JSON **text frame**. After `HANDSHAKE_ACK`, the connection switches to **binary frames** for all events and patches described below (and in the Appendix).
+
 **Client → Server (Events):**
 ```
 ┌─────────┬──────────────┬─────────────────┐
@@ -2426,6 +2720,25 @@ session.Handlers["h3"] = count.Dec  // - button
 
 When the button is clicked, the client sends `{type: CLICK, hid: "h2"}`, and the server runs the mapped handler.
 
+#### 4.4.1 HID assignment
+
+- HIDs are assigned during SSR render and emitted as `data-hid` attributes.
+- Within a session, a HID MUST uniquely identify one live DOM node at a time.
+- The server MUST use the same HID when sending patches targeting that node.
+
+#### 4.4.2 Stability, keys, and list moves
+
+VDOM diffing and patching assumes stable identity. In dynamic lists, **keys** are the identity mechanism:
+
+- If a node is rendered with `Key(...)`, its HID SHOULD remain stable for that keyed identity, even if it moves positions in the list.
+- If a list is rendered without keys, identity becomes positional and HIDs MAY be reassigned across renders, increasing the chance of incorrect patches during inserts/moves.
+
+Rule of thumb: when rendering collections, use `Key(...)` to preserve identity and enable correct `MOVE_NODE`/reorder patches.
+
+#### 4.4.3 Missing HID and self-healing
+
+If the client cannot find a patch target HID in the DOM (or detects a structural mismatch), it MUST treat the connection as out of sync and recover by performing a full reload to the current URL (or an equivalent full resync mechanism).
+
 ### 4.5 Component Mounting
 
 ```go
@@ -2472,6 +2785,46 @@ It does NOT handle:
 
 ### 5.2 Core Implementation
 
+The following snippet is **illustrative** (not normative) and intentionally omits many edge cases.
+
+Normative client behavior:
+- The client SHOULD preserve native browser behavior unless a Vango handler will handle the action.
+- The client MUST NOT blanket-`preventDefault()` on all clicks; for example, normal links, text selection, focus behavior, and modifier-clicks must continue to work.
+- For progressive enhancement, when the WebSocket is unavailable, forms and links MUST fall back to normal HTTP navigation/submission.
+
+#### Event Interception Decision Table
+
+The thin client SHOULD use the following decision table when deciding whether to intercept a browser event and send a Vango event.
+
+**Click / Navigate interception (left click)**
+
+| Condition | Intercept? | Notes |
+|----------|------------|-------|
+| `e.defaultPrevented` | No | Respect other handlers. |
+| `e.button != 0` (right/middle click) | No | Preserve context menus and middle-click. |
+| Any modifier key held (`Ctrl/Meta/Shift/Alt`) | No | Preserve “open in new tab/window”, multi-select, etc. |
+| Element is `<a>` with `target != "" && target != "_self"` | No | Browser controls windowing. |
+| Element is `<a>` with `download` | No | Preserve download behavior. |
+| Element is `<a>` whose resolved URL is cross-origin | No | Do not hijack external navigation. |
+| WebSocket not connected/healthy | No | Progressive enhancement fallback. |
+| No Vango handler exists for this element + event | No | Do not change native behavior. |
+| Otherwise | Yes | Call `preventDefault()` and send the event. |
+
+**How the client knows a handler exists**
+
+Elements that have server-handled events SHOULD include a `data-ve` attribute (comma-separated) listing the event types they handle (e.g. `data-ve="click,submit,input"`). The client SHOULD only intercept events that are present in `data-ve`.
+
+**Thin client attribute schema (Normative)**
+
+- `data-hid="<id>"`: hydration/handler id used by the binary protocol to target handlers and DOM patches.
+- If an element has `data-ve`, it MUST also have `data-hid`.
+- Purely static nodes (no events, no dynamic content that requires patching) MAY omit `data-hid`.
+- Any element that is a target of a DOM patch MUST have a stable `data-hid`.
+- `data-ve="..."`: comma-separated list of server-handled event names for this element. `data-hid` alone MUST NOT imply interception. `data-ve` is used for client-side interception decisions; it does not restrict the binary protocol from sending other event types (e.g. `CUSTOM` or `HOOK_EVENT`).
+  - Canonical event names for `data-ve`: `click`, `input`, `change`, `submit`, `keydown`, `keyup`, `focus`, `blur`, `scroll`, `hook`.
+  - The `hook` capability name corresponds to `CUSTOM`/`HOOK_EVENT` types in the binary protocol.
+- `data-optimistic='{"...": "..."}'`: optional JSON payload describing an optimistic UI change to apply immediately on intercept, before sending the event.
+
 ```javascript
 // Simplified thin client (~200 lines total)
 class VangoClient {
@@ -2504,16 +2857,45 @@ class VangoClient {
         // Click events
         document.addEventListener('click', (e) => {
             const el = e.target.closest('[data-hid]');
-            if (el) {
-                e.preventDefault();
-                this.sendEvent(0x01, el.dataset.hid);
+            if (!el) return;
+            if (e.defaultPrevented) return;
+            if (e.button !== 0) return;
+            if (e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return;
+            if (!this.ws || this.ws.readyState !== WebSocket.OPEN) return;
+
+            const ve = (el.dataset.ve || '').split(',').map(s => s.trim()).filter(Boolean);
+            if (!ve.includes('click')) return;
+
+            // Do not hijack special anchor behavior.
+            if (el.tagName === 'A') {
+                const target = el.getAttribute('target');
+                if (target && target !== '_self') return;
+                if (el.hasAttribute('download')) return;
+
+                const href = el.getAttribute('href');
+                if (href) {
+                    const url = new URL(href, location.href);
+                    if (url.origin !== location.origin) return;
+                }
             }
+
+            // Optimistic updates (if configured) happen before the event is sent.
+            if (el.dataset.optimistic) {
+                const opt = JSON.parse(el.dataset.optimistic);
+                applyOptimisticUpdate(opt);
+            }
+
+            e.preventDefault();
+            this.sendEvent(0x01, el.dataset.hid);
         });
 
         // Input events (debounced)
         document.addEventListener('input', debounce((e) => {
             const el = e.target.closest('[data-hid]');
             if (el) {
+                if (!this.ws || this.ws.readyState !== WebSocket.OPEN) return;
+                const ve = (el.dataset.ve || '').split(',').map(s => s.trim()).filter(Boolean);
+                if (!ve.includes('input')) return;
                 this.sendEvent(0x02, el.dataset.hid, el.value);
             }
         }, 100));
@@ -2522,6 +2904,9 @@ class VangoClient {
         document.addEventListener('submit', (e) => {
             const form = e.target.closest('[data-hid]');
             if (form) {
+                if (!this.ws || this.ws.readyState !== WebSocket.OPEN) return;
+                const ve = (form.dataset.ve || '').split(',').map(s => s.trim()).filter(Boolean);
+                if (!ve.includes('submit')) return;
                 e.preventDefault();
                 this.sendEvent(0x03, form.dataset.hid, new FormData(form));
             }
@@ -2578,7 +2963,7 @@ Button(
     OnClick(count.Inc),
     // Optimistic update hint
     Optimistic("#count", "textContent", func() string {
-        return fmt.Sprintf("%d", count() + 1)
+        return fmt.Sprintf("%d", count.Get() + 1)
     }),
     Text("+"),
 )
@@ -2593,16 +2978,13 @@ Rendered HTML:
 
 Client behavior:
 ```javascript
-document.addEventListener('click', (e) => {
-    const el = e.target.closest('[data-hid]');
-    if (el && el.dataset.optimistic) {
-        // Apply optimistic update immediately
-        const opt = JSON.parse(el.dataset.optimistic);
-        applyOptimisticUpdate(opt);
-    }
-    // Still send to server for confirmation
-    this.sendEvent(0x01, el.dataset.hid);
-});
+// In the thin client's click interception handler:
+if (el.dataset.optimistic) {
+    // Apply optimistic update immediately.
+    const opt = JSON.parse(el.dataset.optimistic);
+    applyOptimisticUpdate(opt);
+}
+// Then send the event to the server for confirmation (and reconcile on error).
 ```
 
 This gives 0ms perceived latency for common operations while maintaining server authority.
@@ -2611,11 +2993,12 @@ This gives 0ms perceived latency for common operations while maintaining server 
 
 The thin client handles transient network failures with exponential backoff, and exposes connection state to the UI via CSS classes and events.
 
-**Connection state classes** are applied to `document.body`:
+**Connection state classes** are applied to `<html>` (`document.documentElement`):
 
-- `body.vango-connected` — WebSocket open and healthy
-- `body.vango-reconnecting` — reconnect attempts in progress
-- `body.vango-offline` — gave up / session expired (requires user action)
+- `html.vango-connecting` — initial connection attempt in progress
+- `html.vango-connected` — WebSocket open and healthy
+- `html.vango-reconnecting` — reconnect attempts in progress
+- `html.vango-disconnected` — gave up / session expired (requires hard reload / user action)
 
 ```javascript
 scheduleReconnect() {
@@ -2628,8 +3011,9 @@ scheduleReconnect() {
 }
 
 setState(state) {
-    document.body.classList.remove("vango-connected", "vango-reconnecting", "vango-offline");
-    document.body.classList.add(`vango-${state}`);
+    const root = document.documentElement;
+    root.classList.remove("vango-connecting", "vango-connected", "vango-reconnecting", "vango-disconnected");
+    root.classList.add(`vango-${state}`);
 
     document.dispatchEvent(new CustomEvent("vango:connection", {
         detail: { state },
@@ -2664,11 +3048,11 @@ Use WASM for:
 
 **Hybrid mode** (specific components run client-side):
 ```go
-// Mark a component as client-required
+// Mark a component as client-executed (full component runtime required)
 func DrawingCanvas() vango.Component {
-    return vango.ClientRequired(func() *vango.VNode {
+    return vango.ClientComponent(func() *vango.VNode {
         // This code runs in WASM, not on server
-        canvas := vango.Ref[js.Value](nil)
+        canvas := vango.NewRef[js.Value](nil)
 
         vango.Effect(func() vango.Cleanup {
             ctx := canvas.Current().Call("getContext", "2d")
@@ -2699,7 +3083,7 @@ func DrawingCanvas() vango.Component {
 │  │   └─────────┘  └─────────┘  └──────────┬──────────┘   │  │
 │  │                                        │               │  │
 │  │   ┌────────────────────────────────────▼───────────┐  │  │
-│  │   │         WASM Island (ClientRequired)           │  │  │
+│  │   │             WASM Island (Hybrid)              │  │  │
 │  │   │   ┌─────────────────────────────────────────┐  │  │  │
 │  │   │   │          DrawingCanvas (~50KB)          │  │  │  │
 │  │   │   │        Runs entirely in WASM            │  │  │  │
@@ -2709,19 +3093,18 @@ func DrawingCanvas() vango.Component {
 └─────────────────────────────────────────────────────────────┘
 ```
 
-The WASM bundle only includes `ClientRequired` components, not the whole app.
+The WASM bundle only includes client-executed widgets/components, not the whole app.
 
 ### 6.4 Client vs Server Signals
 
 ```go
 // Regular signal: lives on server (server-driven) or WASM (WASM mode)
-count := vango.Signal(0)
+count := vango.NewSignal(0)
+// Local to the browser tab (client-only)
+cursorPos := vango.NewLocalSignal(Position{0, 0})
 
-// Local signal: always lives on client (for latency-sensitive state)
-cursorPos := vango.LocalSignal(Position{0, 0})
-
-// Synced signal: client + server, with optimistic updates
-savedValue := vango.SyncedSignal(0)
+// Synced with persistent store (e.g. LocalStorage)
+savedValue := vango.NewSyncedSignal(0)
 ```
 
 **LocalSignal** in server-driven mode:
@@ -2792,26 +3175,44 @@ Characteristics:
 
 #### 6.5.5 Developer-facing API
 
-**Marking an island (Hybrid mode)**
+Vango exposes **two** Hybrid WASM primitives to match the two runtime tiers.
 
-`ClientRequired(...)` marks a client-executed subtree:
+**Tier 1: Widget islands (`WASMWidget`)**
+
+`WASMWidget(...)` embeds an *opaque* container whose contents are owned by a WASM module (imperative rendering loop; no Vango component semantics inside the module).
+
+```go
+func ForceGraph(nodes []Node, edges []Edge) *vango.VNode {
+    return vango.WASMWidget(
+        "force-graph",
+        vango.WASMModule("/wasm/force-graph.wasm"),
+        map[string]any{
+            "nodes": nodes,
+            "edges": edges,
+        },
+    )
+}
+```
+
+Widget module contract (conceptual):
+- `mount(container, props)` → instance
+- `update(instance, newProps)` (optional; idempotent)
+- `destroy(instance)` (optional)
+
+**Tier 2: Client components (`ClientComponent`)**
+
+`ClientComponent(...)` marks a normal Vango component subtree to execute in browser WASM with the full component runtime (signals/memos/effects/component execution).
 
 ```go
 func DrawingCanvas() vango.Component {
-    return vango.ClientRequired(func() *vango.VNode {
-        // Runs in browser WASM
+    return vango.ClientComponent(func() *vango.VNode {
         return Canvas(/* ... */)
     })
 }
 ```
 
-Tier selection:
-- `ClientRequired(...)` defaults to **Tier 1 (Widget Runtime)** in Hybrid mode.
-- Tier 2 is an explicit opt-in to avoid accidental runtime escalation. Recommended API:
-  - `vango.ClientComponent(...)` (preferred for clarity), or
-  - `ClientRequired(..., vango.IslandRuntime(vango.Full))`
-
-Vango may warn/suggest but does not silently switch tiers.
+Compatibility:
+- `ClientRequired(...)` is a compatibility alias for `ClientComponent(...)` (it always implies the **full** component runtime).
 
 **Props model**
 
@@ -2837,12 +3238,12 @@ Transport: implementations reuse the existing WebSocket binary protocol:
 **State management inside islands**
 
 Tier 1 (Widget Runtime):
-- Ephemeral tight-loop state (positions, camera, hover) should be local (plain Go structs or `LocalSignal`).
+- Ephemeral tight-loop state (positions, camera, hover) should be module-local (plain Go structs), not Vango signals.
 - Persisted/shared state remains server authoritative; islands send semantic events to mutate it.
-- `SyncedSignal` is permitted only for coarse-grained optimistic values (e.g., selected node id), not per-frame data.
+- Avoid high-frequency server sync; prefer commit events at interaction boundaries (mouse up, confirm).
 
 Tier 2 (Full Runtime):
-- Islands may run the full reactive model client-side.
+- Islands may run the full reactive model client-side (including `LocalSignal` / `SyncedSignal` where appropriate).
 - In Full WASM mode, server interaction becomes resource/API-driven.
 
 #### 6.5.6 Runtime architecture (SSR + progressive handoff)
@@ -2878,6 +3279,8 @@ Race safety: if an island loads slowly and the user navigates away, the loader m
 
 #### 6.5.7 Island boundary and patching rules
 
+Canonical invariant (normative): **the server patch engine MUST NOT patch inside any island-managed subtree** (WASM widgets, client components, and JavaScript islands). Islands are opaque boundaries.
+
 To prevent server patches from corrupting island-managed state:
 
 - The Vango patch engine MUST NOT patch inside the island container’s subtree.
@@ -2894,7 +3297,7 @@ Vango supports:
 - Hybrid build: server binary + thin client + island bundles.
 - Full WASM build: WASM app bundle (Tier 2 runtime) configured by `"mode":"wasm"`.
 
-During `vango build`, Vango statically identifies `ClientRequired` (and Tier 2 client component markers) and constructs an island dependency graph.
+During `vango build`, Vango statically identifies `WASMWidget(...)` and `ClientComponent(...)` usage (with `ClientRequired` treated as an alias of `ClientComponent`) and constructs an island dependency graph.
 
 Bundling strategy:
 - Island bundles are route-chunked or named bundles (implementation choice), but must be:
@@ -2942,7 +3345,7 @@ WASM islands run in the user’s browser and are therefore untrusted. All island
 
 #### 6.5.11 Summary of normative requirements
 
-1. Hybrid islands are marked explicitly (`ClientRequired`) and compiled into separate WASM bundles; bundles include only those components.
+1. Hybrid islands are marked explicitly (`WASMWidget` for Tier 1; `ClientComponent` for Tier 2) and compiled into separate WASM bundles; bundles include only those islands.
 2. Two runtime tiers exist: Tier 1 widget runtime (default for Hybrid) and Tier 2 full component runtime (explicit opt-in; primarily Full WASM mode).
 3. Thin client loads islands on demand, analogous to hook loading strategy.
 4. Island boundary is a leaf: server patches do not mutate island internals.
@@ -2954,6 +3357,13 @@ WASM islands run in the user’s browser and are therefore untrusted. All island
 ## 7. State Management
 
 Vango's state management is designed around the server-driven architecture. Unlike client-side frameworks that need complex solutions (Redux, MobX, Zustand) to synchronize state, Vango keeps state on the server where the data already lives.
+
+### 7.0 Rules of Correctness (Normative)
+
+1. **Single-writer session loop:** Signal writes (**Set/Update** and all convenience writers like `Inc`, `Toggle`, etc.) MUST occur on the session event loop.
+2. **Cross-goroutine updates:** Goroutines MUST NOT write signals directly; they MUST marshal updates back via `ctx.Dispatch(...)`.
+3. **No in-place mutation of composite values:** If a signal stores a slice/map/struct that contains slices/maps/pointers, updates SHOULD treat the value as immutable and return a fresh copy (see §7.6). This avoids aliasing bugs and makes debugging/DevTools reliable.
+4. **Hook-order stability:** Render-time creation of `Signal/Memo/Effect/Resource/Ref` MUST follow stable hook-order semantics (see §3.1.3).
 
 ### 7.1 Why Vango Doesn't Need Redux
 
@@ -2996,7 +3406,7 @@ Vango provides three signal scopes for different use cases:
 // ┌─────────────────────────────────────────────────────────────────┐
 // │                     SIGNAL SCOPES                                │
 // ├─────────────────┬─────────────────┬─────────────────────────────┤
-// │    Signal       │  SharedSignal   │      GlobalSignal           │
+// │    NewSignal     │  NewSharedSignal │    NewGlobalSignal         │
 // ├─────────────────┼─────────────────┼─────────────────────────────┤
 // │ One component   │ One session     │ All sessions                │
 // │ instance        │ (one user/tab)  │ (all users)                 │
@@ -3009,16 +3419,16 @@ Vango provides three signal scopes for different use cases:
 // Component-local: created per instance, GC'd on unmount
 func Counter(initial int) vango.Component {
     return vango.Func(func() *vango.VNode {
-        count := vango.Signal(initial)  // Local to this Counter
-        return Div(Text(fmt.Sprintf("%d", count())))
+        count := vango.NewSignal(initial)  // Local to this Counter
+        return Div(Text(fmt.Sprintf("%d", count.Get())))
     })
 }
 
 // Session-shared: defined at package level, scoped to user session
-var CartItems = vango.SharedSignal([]CartItem{})
+var CartItems = vango.NewSharedSignal([]CartItem{})
 
 // Global: shared across ALL connected users
-var OnlineUsers = vango.GlobalSignal([]User{})
+var OnlineUsers = vango.NewGlobalSignal([]User{})
 ```
 
 ### 7.3 Shared State Patterns
@@ -3032,20 +3442,20 @@ package store
 import "vango"
 
 // State
-var CartItems = vango.SharedSignal([]CartItem{})
+var CartItems = vango.NewSharedSignal([]CartItem{})
 
 // Derived state (automatically updates when CartItems changes)
-var CartTotal = vango.SharedMemo(func() float64 {
+var CartTotal = vango.NewSharedMemo(func() float64 {
     total := 0.0
-    for _, item := range CartItems() {
+    for _, item := range CartItems.Get() {
         total += item.Price * float64(item.Qty)
     }
     return total
 })
 
-var CartCount = vango.SharedMemo(func() int {
+var CartCount = vango.NewSharedMemo(func() int {
     count := 0
-    for _, item := range CartItems() {
+    for _, item := range CartItems.Get() {
         count += item.Qty
     }
     return count
@@ -3054,15 +3464,19 @@ var CartCount = vango.SharedMemo(func() int {
 // Actions (functions that modify state)
 func AddItem(product Product, qty int) {
     CartItems.Update(func(items []CartItem) []CartItem {
+        // Copy to avoid mutating shared backing arrays.
+        next := make([]CartItem, len(items))
+        copy(next, items)
+
         // Check if already in cart
-        for i, item := range items {
+        for i, item := range next {
             if item.ProductID == product.ID {
-                items[i].Qty += qty
-                return items
+                next[i].Qty += qty
+                return next
             }
         }
         // Add new item
-        return append(items, CartItem{
+        return append(next, CartItem{
             ProductID: product.ID,
             Product:   product,
             Qty:       qty,
@@ -3127,17 +3541,17 @@ type ProjectState struct {
     Selected map[int]bool
 }
 
-var State = vango.SharedSignal(ProjectState{})
+var State = vango.NewSharedSignal(ProjectState{})
 
 // Selectors (derived state for specific parts)
-var FilteredTasks = vango.SharedMemo(func() []Task {
-    s := State()
+var FilteredTasks = vango.NewSharedMemo(func() []Task {
+    s := State.Get()
     return filterTasks(s.Tasks, s.Filter)
 })
 
-var SelectedCount = vango.SharedMemo(func() int {
+var SelectedCount = vango.NewSharedMemo(func() int {
     count := 0
-    for _, selected := range State().Selected {
+    for _, selected := range State.Get().Selected {
         if selected {
             count++
         }
@@ -3148,12 +3562,17 @@ var SelectedCount = vango.SharedMemo(func() int {
 // Actions with targeted updates
 func ToggleTask(taskID int) {
     State.Update(func(s ProjectState) ProjectState {
-        for i := range s.Tasks {
-            if s.Tasks[i].ID == taskID {
-                s.Tasks[i].Done = !s.Tasks[i].Done
+        // Copy slice to avoid in-place mutation of shared backing arrays.
+        nextTasks := make([]Task, len(s.Tasks))
+        copy(nextTasks, s.Tasks)
+
+        for i := range nextTasks {
+            if nextTasks[i].ID == taskID {
+                nextTasks[i].Done = !nextTasks[i].Done
                 break
             }
         }
+        s.Tasks = nextTasks
         return s
     })
 }
@@ -3167,10 +3586,13 @@ func SetFilter(filter TaskFilter) {
 
 func SelectTask(taskID int, selected bool) {
     State.Update(func(s ProjectState) ProjectState {
-        if s.Selected == nil {
-            s.Selected = make(map[int]bool)
+        // Copy map to avoid mutating shared references.
+        nextSelected := make(map[int]bool, len(s.Selected)+1)
+        for k, v := range s.Selected {
+            nextSelected[k] = v
         }
-        s.Selected[taskID] = selected
+        nextSelected[taskID] = selected
+        s.Selected = nextSelected
         return s
     })
 }
@@ -3185,13 +3607,16 @@ GlobalSignals synchronize across all connected sessions:
 package store
 
 // Shared across ALL users
-var OnlineUsers = vango.GlobalSignal([]User{})
-var CursorPositions = vango.GlobalSignal(map[string]Position{})
+var OnlineUsers = vango.NewGlobalSignal([]User{})
+var CursorPositions = vango.NewGlobalSignal(map[string]Position{})
 
 // When a user connects
 func UserJoined(user User) {
     OnlineUsers.Update(func(users []User) []User {
-        return append(users, user)
+        next := make([]User, 0, len(users)+1)
+        next = append(next, users...)
+        next = append(next, user)
+        return next
     })
 }
 
@@ -3208,16 +3633,24 @@ func UserLeft(userID string) {
     })
 
     CursorPositions.Update(func(pos map[string]Position) map[string]Position {
-        delete(pos, userID)
-        return pos
+        next := make(map[string]Position, len(pos))
+        for k, v := range pos {
+            next[k] = v
+        }
+        delete(next, userID)
+        return next
     })
 }
 
 // Broadcast cursor movement
 func MoveCursor(userID string, pos Position) {
     CursorPositions.Update(func(positions map[string]Position) map[string]Position {
-        positions[userID] = pos
-        return positions
+        next := make(map[string]Position, len(positions)+1)
+        for k, v := range positions {
+            next[k] = v
+        }
+        next[userID] = pos
+        return next
     })
 }
 ```
@@ -3226,6 +3659,7 @@ func MoveCursor(userID string, pos Position) {
 // components/collaborative_canvas.go
 func CollaborativeCanvas() vango.Component {
     return vango.Func(func() *vango.VNode {
+        ctx := vango.UseCtx()
         cursors := store.CursorPositions()
         currentUser := ctx.User()
 
@@ -3259,7 +3693,7 @@ For loading data with loading/error/success states:
 func UserProfile(userID int) vango.Component {
     return vango.Func(func() *vango.VNode {
         // Resource handles loading/error/ready states
-        user := vango.Resource(func() (*User, error) {
+        user := vango.NewResource(func() (*User, error) {
             return db.Users.FindByID(userID)
         })
 
@@ -3281,7 +3715,7 @@ func UserProfile(userID int) vango.Component {
 // Pattern 2: Match helper for cleaner code
 func UserProfile(userID int) vango.Component {
     return vango.Func(func() *vango.VNode {
-        user := vango.Resource(func() (*User, error) {
+        user := vango.NewResource(func() (*User, error) {
             return db.Users.FindByID(userID)
         })
 
@@ -3304,7 +3738,7 @@ func UserProfile(userID int) vango.Component {
 // Pattern 3: With refetch capability
 func ProjectPage(projectID int) vango.Component {
     return vango.Func(func() *vango.VNode {
-        project := vango.Resource(func() (*Project, error) {
+        project := vango.NewResource(func() (*Project, error) {
             return db.Projects.FindByID(projectID)
         })
 
@@ -3325,6 +3759,8 @@ func ProjectPage(projectID int) vango.Component {
 ### 7.6 Immutable Update Helpers
 
 To avoid accidental mutations, use these helper patterns:
+
+Normative rule: update functions that operate on slices/maps/structs MUST NOT mutate shared backing arrays or referenced maps in place. Return a fresh copy when modifying composite values.
 
 ```go
 // DANGEROUS: Mutating in place
@@ -3381,33 +3817,33 @@ Memos can depend on other memos, creating a computation graph:
 // store/analytics.go
 package store
 
-var RawData = vango.SharedSignal([]DataPoint{})
-var DateRange = vango.SharedSignal(DateRange{Start: weekAgo, End: now})
-var Grouping = vango.SharedSignal("day")  // day, week, month
+var RawData = vango.NewSharedSignal([]DataPoint{})
+var DateRange = vango.NewSharedSignal(DateRange{Start: weekAgo, End: now})
+var Grouping = vango.NewSharedSignal("day")  // day, week, month
 
 // Level 1: Filter by date
-var FilteredData = vango.SharedMemo(func() []DataPoint {
-    data := RawData()
-    range_ := DateRange()
+var FilteredData = vango.NewSharedMemo(func() []DataPoint {
+    data := RawData.Get()
+    range_ := DateRange.Get()
     return filterByDate(data, range_.Start, range_.End)
 })
 
 // Level 2: Group filtered data
-var GroupedData = vango.SharedMemo(func() map[string][]DataPoint {
-    data := FilteredData()  // Depends on FilteredData
-    grouping := Grouping()
+var GroupedData = vango.NewSharedMemo(func() map[string][]DataPoint {
+    data := FilteredData.Get()  // Depends on FilteredData
+    grouping := Grouping.Get()
     return groupByPeriod(data, grouping)
 })
 
 // Level 3: Aggregate grouped data
-var ChartData = vango.SharedMemo(func() []ChartPoint {
-    grouped := GroupedData()  // Depends on GroupedData
+var ChartData = vango.NewSharedMemo(func() []ChartPoint {
+    grouped := GroupedData.Get()  // Depends on GroupedData
     return aggregateForChart(grouped)
 })
 
 // Level 3 (parallel): Summary stats
-var SummaryStats = vango.SharedMemo(func() Stats {
-    data := FilteredData()  // Also depends on FilteredData
+var SummaryStats = vango.NewSharedMemo(func() Stats {
+    data := FilteredData.Get()  // Also depends on FilteredData
     return Stats{
         Total:   sum(data),
         Average: avg(data),
@@ -3527,6 +3963,10 @@ A commit runs the following pipeline in order:
 5. Run effect cleanups and schedule effect runs (effects run after render)
 6. If effects produced additional signal writes, run another commit cycle (bounded; see S7)
 
+Normative ordering rules:
+- Effects MUST run after patches are computed (and typically after patch send) to avoid re-entrant dirtying during diff/encode.
+- Signal writes performed by effects MUST be collected into the next commit cycle, and the runtime MUST enforce `MaxCommitCycles` to prevent infinite loops.
+
 **S4. Implicit Tx per session “tick” (default)**
 
 By default, the runtime executes these operations within an implicit Tx:
@@ -3535,7 +3975,7 @@ By default, the runtime executes these operations within an implicit Tx:
 - effect executions (after render)
 - application of async results that marshal back to the session loop (see `ctx.Dispatch`)
 
-Explicit transactions are still recommended for naming/grouping and for complex multi-signal updates.
+Because of the implicit Tx, most application code does not need explicit transactions for correctness. Use `TxNamed(...)` primarily for naming/action boundaries in logs, DevTools, and tracing, and for grouping multi-signal updates that are not already inside a single handler.
 
 **S5. Nested Tx behavior**
 
@@ -3596,10 +4036,21 @@ func Snapshot() Snapshot
 func SnapshotGet[T any](snap Snapshot, sig Signal[T]) T
 ```
 
+Note: Go does not currently support generic methods, so `SnapshotGet` is a function rather than `snap.Get(sig)`.
+
+Snapshot capture semantics (normative):
+- If called outside a Tx, a snapshot reflects the current committed state.
+- If called inside a Tx, a snapshot reflects the committed state at the start of the **outermost** Tx, and MUST NOT include buffered writes performed later in the Tx.
+- Snapshots are **shallow** views: composite values (slices, maps, pointers) may still alias. Use copying for rollback/state restoration (see below).
+
 Rule of thumb:
-- Use `sig()` in render/memo/effect when you want reactivity.
+- Use `sig.Get()` in render/memo/effect when you want reactivity.
 - Use `sig.Peek()` (or `vango.Untracked`) for reads that should not create reactive dependencies.
 - Use `SnapshotGet(snap, sig)` when you specifically need the “before” value stable across Tx writes.
+
+**Snapshot vs Copy (rollback correctness)**
+
+Snapshots provide consistent “before” reads for computation, but they do not automatically deep-copy composite values. If you need to *restore* prior state (rollback), you MUST copy slices/maps/struct graphs as appropriate for your domain types (see §7.6).
 
 **Cross-goroutine updates (required for correctness)**
 
@@ -3610,6 +4061,16 @@ The session runtime is single-writer and not thread-safe. Async goroutines must 
 // Safe to call from any goroutine.
 func (ctx Ctx) Dispatch(fn func())
 ```
+
+Concurrency note (normative):
+- `ctx.Dispatch(...)` MUST be safe to call from any goroutine.
+- `ctx.StdContext()` MUST be safe to call from any goroutine (or safe to capture and use from goroutines).
+- Other `ctx` methods MUST NOT be assumed goroutine-safe unless explicitly documented.
+
+`ctx.StdContext()` semantics (normative):
+- `ctx.StdContext()` MUST be derived from the current session “tick” context.
+- `ctx.StdContext()` SHOULD carry tracing and any applicable deadlines/timeouts for the current tick.
+- If user code derives a cancelable context (e.g. `cctx, cancel := context.WithCancel(ctx.StdContext())`) and returns `cancel` as an effect cleanup, the runtime MUST call that cleanup on dependency changes and unmount, ensuring cancellation propagates.
 
 Dev-mode enforcement:
 - If `Signal.Set/Update` is called from outside the session loop, dev mode panics with a clear message:
@@ -3656,18 +4117,30 @@ func toggleSidebar() {
 ```go
 func UserProfile(userID Signal[int]) vango.Component {
     return vango.Func(func() *vango.VNode {
-        user := vango.Signal[*User](nil)
-        loading := vango.Signal(false)
+        ctx := vango.UseCtx()
+        user := vango.NewSignal[*User](nil)
+        loading := vango.NewSignal(false)
 
         vango.Effect(func() vango.Cleanup {
             loading.Set(true)
 
-            id := userID()
-            go func() {
-                u, err := db.Users.FindByID(id)
+            id := userID.Get()
+            cctx, cancel := context.WithCancel(ctx.StdContext())
+            go func(id int) {
+                // Best-effort cancellation: if your DB supports context, pass cctx.
+                u, err := db.Users.FindByID(cctx, id)
+                if err != nil && cctx.Err() != nil {
+                    return // cancelled; ignore
+                }
 
                 // Marshal back to session loop
                 ctx.Dispatch(func() {
+                    if cctx.Err() != nil {
+                        return // cancelled; ignore
+                    }
+                    if userID.Peek() != id {
+                        return // stale; ignore
+                    }
                     vango.TxNamed("user:load_result", func() {
                         if err != nil {
                             // set error signal, etc.
@@ -3677,18 +4150,18 @@ func UserProfile(userID Signal[int]) vango.Component {
                         loading.Set(false)
                     })
                 })
-            }()
+            }(id)
 
-            return nil
+            return cancel
         })
 
-        if loading() {
+        if loading.Get() {
             return Spinner()
         }
-        if user() == nil {
+        if user.Get() == nil {
             return Empty()
         }
-        return ProfileView(user())
+        return ProfileView(user.Get())
     })
 }
 ```
@@ -3726,7 +4199,7 @@ type txn struct {
 
 **Signal read/write behavior**
 
-Read (`sig()`):
+Read (`sig.Get()`):
 - If in a Tx and `sig` has a buffered write, return the buffered value.
 - Else return the committed value.
 - If in a reactive context (render/memo/effect), record dependency as usual.
@@ -3843,13 +4316,13 @@ When session serialization is enabled, signals are persisted by default (as JSON
 
 ```go
 // Persisted by default (as part of the session)
-draft := vango.Signal(FormDraft{})
+draft := vango.NewSignal(FormDraft{})
 
 // Excluded from persistence
-cursor := vango.Signal(Point{0, 0}, vango.Transient())
+cursor := vango.NewSignal(Point{0, 0}, vango.Transient())
 
 // Stable key for serialization (recommended for important values)
-wizardStep := vango.Signal(1, vango.PersistKey("checkout_step"))
+wizardStep := vango.NewSignal(1, vango.PersistKey("checkout_step"))
 ```
 
 #### User Preferences (Pref)
@@ -3883,7 +4356,7 @@ In development mode, Vango logs all signal changes:
 
 ```go
 // Optional: Add action names for clearer logs
-count.Set(count() + 1, "increment button clicked")
+count.Set(count.Get() + 1, "increment button clicked")
 ```
 
 ```
@@ -3921,39 +4394,39 @@ Opens a browser panel showing:
 
 | Scenario | Pattern | Example |
 |----------|---------|---------|
-| Form input | Local Signal | `input := vango.Signal("")` |
-| UI state (modals, tabs) | Local Signal | `isOpen := vango.Signal(false)` |
-| Shopping cart | SharedSignal | `var Cart = vango.SharedSignal(...)` |
+| Form input | Local Signal | `input := vango.NewSignal("")` |
+| UI state (modals, tabs) | Local Signal | `isOpen := vango.NewSignal(false)` |
+| Shopping cart | NewSharedSignal | `var Cart = vango.NewSharedSignal(...)` |
 | User preferences | Pref | `var Theme = pref.New("theme", "system")` |
-| Filter/search state | SharedSignal | `var Filter = vango.SharedSignal(...)` |
-| Async data loading | Resource | `user := vango.Resource(...)` |
-| Derived calculations | Memo | `var Total = vango.SharedMemo(...)` |
-| Real-time presence | GlobalSignal | `var OnlineUsers = vango.GlobalSignal(...)` |
-| Collaborative editing | GlobalSignal | `var DocContent = vango.GlobalSignal(...)` |
+| Filter/search state | NewSharedSignal | `var Filter = vango.NewSharedSignal(...)` |
+| Async data loading | NewResource | `user := vango.NewResource(...)` |
+| Derived calculations | NewSharedMemo | `var Total = vango.NewSharedMemo(...)` |
+| Real-time presence | NewGlobalSignal | `var OnlineUsers = vango.NewGlobalSignal(...)` |
+| Collaborative editing | NewGlobalSignal | `var DocContent = vango.NewGlobalSignal(...)` |
 
 ### 7.12 Anti-Patterns to Avoid
 
 ```go
 // ❌ DON'T: Create signals outside component context
-var badSignal = vango.Signal(0)  // Package-level local signal
+var badSignal = vango.NewSignal(0)  // Package-level local signal
 
 func MyComponent() vango.Component {
     return vango.Func(func() *vango.VNode {
         // badSignal is shared across ALL instances!
-        return Text(fmt.Sprintf("%d", badSignal()))
+        return Text(fmt.Sprintf("%d", badSignal.Get()))
     })
 }
 
 // ✅ DO: Create local signals inside the component
 func MyComponent() vango.Component {
     return vango.Func(func() *vango.VNode {
-        goodSignal := vango.Signal(0)  // Per-instance
-        return Text(fmt.Sprintf("%d", goodSignal()))
+        goodSignal := vango.NewSignal(0)  // Per-instance
+        return Text(fmt.Sprintf("%d", goodSignal.Get()))
     })
 }
 
-// ✅ OR: Use SharedSignal explicitly for intentional sharing
-var intentionallyShared = vango.SharedSignal(0)
+// ✅ OR: Use NewSharedSignal explicitly for intentional sharing
+var intentionallyShared = vango.NewSharedSignal(0)
 ```
 
 ```go
@@ -3961,7 +4434,7 @@ var intentionallyShared = vango.SharedSignal(0)
 func BadComponent() vango.Component {
     return vango.Func(func() *vango.VNode {
         if someCondition {
-            value := mySignal()  // Subscription depends on condition!
+            value := mySignal.Get()  // Subscription depends on condition!
         }
         return Div()
     })
@@ -3970,7 +4443,7 @@ func BadComponent() vango.Component {
 // ✅ DO: Read signals unconditionally, use value conditionally
 func GoodComponent() vango.Component {
     return vango.Func(func() *vango.VNode {
-        value := mySignal()  // Always subscribe
+        value := mySignal.Get()  // Always subscribe
         if someCondition {
             return Div(Text(fmt.Sprintf("%d", value)))
         }
@@ -3989,7 +4462,8 @@ items.Update(func(i []Item) []Item {
 
 // ✅ DO: Use Effect for heavy async work
 vango.Effect(func() vango.Cleanup {
-    input := items() // Tracked: re-run effect when items changes
+    ctx := vango.UseCtx()
+    input := items.Get() // Tracked: re-run effect when items changes
     go func(input []Item) {
         result := veryExpensiveOperation(input)
         ctx.Dispatch(func() {
@@ -4016,9 +4490,9 @@ Vango uses a four-tier interaction model:
 ├───────────────────┬─────────────────────┬──────────────────────────┬───────────────────────┤
 │   Server Events   │    Client Hooks     │       WASM Islands        │       JS Islands      │
 ├───────────────────┼─────────────────────┼──────────────────────────┼───────────────────────┤
-│   OnClick         │   Hook("Sortable")  │  ClientRequired(Canvas)   │  JSIsland("editor")   │
-│   OnSubmit        │   Hook("Draggable") │  ClientRequired(WebGL)    │  JSIsland("chart")    │
-│   OnInput         │   Hook("Tooltip")   │  ClientRequired(Sim)      │  JSIsland("map")      │
+│   OnClick         │   Hook("Sortable")  │  WASMWidget("canvas")     │  JSIsland("editor")   │
+│   OnSubmit        │   Hook("Draggable") │  WASMWidget("webgl")      │  JSIsland("chart")    │
+│   OnInput         │   Hook("Tooltip")   │  WASMWidget("sim")        │  JSIsland("map")      │
 ├───────────────────┼─────────────────────┼──────────────────────────┼───────────────────────┤
 │   Server runs     │   Client runs the   │  Client runs tight loop;  │  Third-party/client   │
 │   the handler     │   behavior, server  │  server receives commits  │  logic + bridge       │
@@ -4050,6 +4524,9 @@ Vango uses a four-tier interaction model:
 ### 8.2 Client Hooks
 
 Client Hooks are the recommended way to handle interactions that need 60fps visual feedback (drag-and-drop, sortable lists, tooltips, etc.). The hook handles all client-side animation and behavior, then sends a single event to the server when the interaction completes.
+
+**Hook Interception**: Applying a `Hook(...)` to an element automatically marks it for event interception. The runtime ensures the generated element includes `hook` in its `data-ve` attribute, and the thin client uses the specialized `Hook` attribute to manage the lifecycle of the client-side behavior.
+
 
 #### The Hook Attribute
 
@@ -4332,11 +4809,13 @@ For more control, update signals optimistically with manual rollback:
 ```go
 func TaskList() vango.Component {
     return vango.Func(func() *vango.VNode {
-        tasks := vango.Signal(initialTasks)
+        ctx := vango.UseCtx()
+        tasks := vango.NewSignal(initialTasks)
 
         toggleTask := func(taskID string) {
             // Capture original state for rollback
-            originalTasks := append([]Task(nil), tasks()...)
+            originalTasks := append([]Task(nil), tasks.Get()...) // copies slice + elements (no shared backing array)
+            // If Task contains pointer/map/slice fields, deep-copy those too to avoid aliasing.
 
             // Optimistically update signal (triggers re-render immediately)
             tasks.Update(func(t []Task) []Task {
@@ -4368,7 +4847,7 @@ func TaskList() vango.Component {
         }
 
         return Ul(
-            Range(tasks(), func(task Task, i int) *vango.VNode {
+            Range(tasks.Get(), func(task Task, i int) *vango.VNode {
                 return Li(
                     Key(task.ID),
                     ClassIf(task.Done, "completed"),
@@ -4537,14 +5016,14 @@ For click-outside-to-close behavior:
 ```go
 func DropdownMenu() vango.Component {
     return vango.Func(func() *vango.VNode {
-        open := vango.Signal(false)
+        open := vango.NewSignal(false)
 
         return Div(
             Class("dropdown"),
 
             Button(OnClick(open.Toggle), Text("Menu")),
 
-            If(open(),
+            If(open.Get(),
                 Div(
                     Class("dropdown-content"),
 
@@ -4775,7 +5254,7 @@ OnEvent("color-changed", func(e vango.HookEvent) {
 ```go
 func BoardPage() vango.Component {
     return vango.Func(func() *vango.VNode {
-        selected := vango.Signal[*Card](nil)
+        selected := vango.NewSignal[*Card](nil)
 
         return KeyboardScope(
             // Arrow navigation
@@ -4785,9 +5264,9 @@ func BoardPage() vango.Component {
             Key("ArrowLeft", func() { moveToPrevColumn(selected) }),
 
             // Actions
-            Key("Enter", func() { openCard(selected()) }),
-            Key("e", func() { editCard(selected()) }),
-            Key("d", func() { deleteCard(selected()) }),
+            Key("Enter", func() { openCard(selected.Get()) }),
+            Key("e", func() { editCard(selected.Get()) }),
+            Key("d", func() { deleteCard(selected.Get()) }),
             Key("Escape", func() { selected.Set(nil) }),
 
             // With modifiers
@@ -4872,22 +5351,21 @@ Input(
     Type("text"),
 )
 
-// Programmatic focus
+// Programmatic focus (server-driven)
+//
+// In server-driven mode, the server cannot hold DOM handles. Prefer `Autofocus()`
+// on elements that appear/mount when UI state changes (e.g. when a modal opens).
 func SearchModal() vango.Component {
     return vango.Func(func() *vango.VNode {
-        inputRef := vango.Ref[js.Value](nil)
-
-        vango.Effect(func() vango.Cleanup {
-            // Focus input when modal opens
-            inputRef.Current().Call("focus")
-            return nil
-        })
-
+        open := vango.NewSignal(true) // Example state; typically driven by your UI.
+        if !open.Get() {
+            return vango.Empty()
+        }
         return Div(Class("modal"),
             Input(
-                Ref(inputRef),
                 Type("search"),
                 Placeholder("Search..."),
+                Autofocus(),
             ),
         )
     })
@@ -4921,23 +5399,23 @@ func scrollToCard(cardID string) {
 // Scroll position tracking
 func InfiniteList() vango.Component {
     return vango.Func(func() *vango.VNode {
-        items := vango.Signal(initialItems)
-        loading := vango.Signal(false)
+        items := vango.NewSignal(initialItems)
+        loading := vango.NewSignal(false)
 
         return Div(
             Class("list-container"),
             OnScroll(func(e vango.ScrollEvent) {
                 // Load more when near bottom
                 if e.ScrollTop + e.ClientHeight >= e.ScrollHeight - 100 {
-                    if !loading() {
+                    if !loading.Get() {
                         loading.Set(true)
                         loadMore(items, loading)
                     }
                 }
             }),
 
-            Range(items(), ItemComponent),
-            If(loading(), Spinner()),
+            Range(items.Get(), ItemComponent),
+            If(loading.Get(), Spinner()),
         )
     })
 }
@@ -5135,32 +5613,21 @@ Server events and client hooks handle most cases. Use WASM components when you n
 | Heavy data processing | Filter/sort large datasets client-side |
 | Offline computation | Work without server connection |
 
-In Hybrid mode, `ClientRequired(...)` creates a WASM island. By default this is a Tier 1 widget island: the server treats it as an opaque subtree, and the island sends semantic commit events back to the server instead of per-frame streaming.
+In Hybrid mode:
+- Use `WASMWidget(...)` for Tier 1 widget islands (opaque subtree; semantic commit events back to the server).
+- Use `ClientComponent(...)` (or `ClientRequired(...)`) only when you need full Vango component semantics in the browser.
 
 ```go
 // Example: Physics-based graph (WASM)
-func ForceGraph(nodes []Node, edges []Edge) vango.Component {
-    return vango.ClientRequired(func() *vango.VNode {
-        // This runs entirely in WASM
-        // because it needs continuous physics simulation
-
-        canvasRef := vango.Ref[js.Value](nil)
-
-        vango.Effect(func() vango.Cleanup {
-            sim := physics.NewSimulation(canvasRef.Current())
-            sim.SetNodes(nodes)
-            sim.SetEdges(edges)
-            sim.Start()  // Runs at 60fps
-
-            return sim.Stop
-        })
-
-        return Canvas(
-            Ref(canvasRef),
-            Width(800),
-            Height(600),
-        )
-    })
+func ForceGraph(nodes []Node, edges []Edge) *vango.VNode {
+    return vango.WASMWidget(
+        "force-graph",
+        vango.WASMModule("/wasm/force-graph.wasm"),
+        map[string]any{
+            "nodes": nodes,
+            "edges": edges,
+        },
+    )
 }
 ```
 
@@ -5276,9 +5743,18 @@ A(
 5. Client applies patches
 ```
 
-No full page reload, no WASM download, minimal data transfer.
+#### 9.5.1 URL-Only Updates vs Navigation (Normative)
 
-If patch application fails (DOM mismatch, hook error), the client self-heals by performing a hard reload to the target URL.
+Vango has two distinct URL update mechanisms:
+
+- **Query-only URL patches** (`URL_PUSH` / `URL_REPLACE`): MUST update only the current route’s **query parameters** and MUST NOT remount the route. These patches MAY be sent alongside normal DOM patches from the same transaction when UI depends on the updated query state (e.g. filters).
+- **Navigation** (`NAVIGATE` event): MUST change the active route (path + optional query), MUST remount the route component tree, and MUST send a navigation envelope that includes the URL update plus the DOM patches needed to transition the current page to the new page.
+
+Progressive enhancement requirements:
+- If the WebSocket is not connected/healthy, or if an anchor does not have a Vango click handler (`data-ve` does not include `click`), the browser MUST perform native navigation.
+- If patch application fails (DOM mismatch, hook error), the client MUST self-heal by hard reloading to the target URL (or an equivalent full resync mechanism).
+
+No full page reload, no WASM download, minimal data transfer.
 
 ---
 
@@ -5291,25 +5767,47 @@ In server-driven mode, components have direct access to backend:
 ```go
 func UserList() vango.Component {
     return vango.Func(func() *vango.VNode {
-        users := vango.Signal([]User{})
-        search := vango.Signal("")
+        rctx := vango.UseCtx()
+        users := vango.NewSignal([]User{})
+        search := vango.NewSignal("")
 
         vango.Effect(func() vango.Cleanup {
-            // Direct database query - no HTTP, no JSON!
-            results, _ := db.Users.Search(search())
-            users.Set(results)
-            return nil
+            q := search.Get() // Tracked
+            cctx, cancel := context.WithCancel(rctx.StdContext())
+
+            go func(q string) {
+                // Best-effort cancellation: if your DB supports context, pass cctx.
+                results, err := db.Users.Search(cctx, q)
+                if err != nil && cctx.Err() != nil {
+                    return // cancelled; ignore
+                }
+                rctx.Dispatch(func() {
+                    if cctx.Err() != nil {
+                        return // cancelled; ignore
+                    }
+                    if search.Peek() != q {
+                        return // stale; ignore
+                    }
+                    if err != nil {
+                        users.Set([]User{})
+                        return
+                    }
+                    users.Set(results)
+                })
+            }(q)
+
+            return cancel
         })
 
         return Div(
             Input(
                 Type("search"),
-                Value(search()),
+                Value(search.Get()),
                 OnInput(search.Set),
                 Placeholder("Search users..."),
             ),
             Ul(
-                Range(users(), func(u User, i int) *vango.VNode {
+                Range(users.Get(), func(u User, i int) *vango.VNode {
                     return Li(Key(u.ID), Text(u.Name))
                 }),
             ),
@@ -5347,24 +5845,60 @@ Generated endpoints:
 ```go
 func WeatherWidget(city string) vango.Component {
     return vango.Func(func() *vango.VNode {
-        weather := vango.Signal[*Weather](nil)
+        rctx := vango.UseCtx()
+        weather := vango.NewSignal[*Weather](nil)
 
         vango.Effect(func() vango.Cleanup {
-            // HTTP call from server (not browser!)
-            resp, _ := http.Get("https://api.weather.com/v1/" + city)
-            var w Weather
-            json.NewDecoder(resp.Body).Decode(&w)
-            weather.Set(&w)
-            return nil
+            cctx, cancel := context.WithCancel(rctx.StdContext())
+            city := city
+
+            go func(city string) {
+                // HTTP call from server (not browser!)
+                req, _ := http.NewRequestWithContext(cctx, "GET", "https://api.weather.com/v1/"+city, nil)
+                resp, err := http.DefaultClient.Do(req)
+                if err != nil && cctx.Err() != nil {
+                    return // cancelled; ignore
+                }
+                if err != nil {
+                    rctx.Dispatch(func() {
+                        if cctx.Err() != nil {
+                            return
+                        }
+                        weather.Set(nil)
+                    })
+                    return
+                }
+                defer resp.Body.Close()
+
+                var w Weather
+                if err := json.NewDecoder(resp.Body).Decode(&w); err != nil {
+                    rctx.Dispatch(func() {
+                        if cctx.Err() != nil {
+                            return
+                        }
+                        weather.Set(nil)
+                    })
+                    return
+                }
+
+                rctx.Dispatch(func() {
+                    if cctx.Err() != nil {
+                        return
+                    }
+                    weather.Set(&w)
+                })
+            }(city)
+
+            return cancel
         })
 
-        if weather() == nil {
+        if weather.Get() == nil {
             return Loading()
         }
 
         return Div(Class("weather"),
-            Text(weather().Description),
-            Text(fmt.Sprintf("%.1f°C", weather().Temp)),
+            Text(weather.Get().Description),
+            Text(fmt.Sprintf("%.1f°C", weather.Get().Temp)),
         )
     })
 }
@@ -5384,12 +5918,12 @@ Benefits:
 ```go
 func LoginForm(ctx vango.Ctx) vango.Component {
     return vango.Func(func() *vango.VNode {
-        email := vango.Signal("")
-        password := vango.Signal("")
-        error := vango.Signal("")
+        email := vango.NewSignal("")
+        password := vango.NewSignal("")
+        error := vango.NewSignal("")
 
         submit := func() {
-            user, err := auth.Login(email(), password())
+            user, err := auth.Login(email.Get(), password.Get())
             if err != nil {
                 error.Set(err.Error())
                 return
@@ -5399,14 +5933,14 @@ func LoginForm(ctx vango.Ctx) vango.Component {
         }
 
         return Form(OnSubmit(submit),
-            If(error() != "",
-                Div(Class("error"), Text(error())),
+            If(error.Get() != "",
+                Div(Class("error"), Text(error.Get())),
             ),
 
             Label(Text("Email")),
             Input(
                 Type("email"),
-                Value(email()),
+                Value(email.Get()),
                 OnInput(email.Set),
                 Required(),
             ),
@@ -5414,7 +5948,7 @@ func LoginForm(ctx vango.Ctx) vango.Component {
             Label(Text("Password")),
             Input(
                 Type("password"),
-                Value(password()),
+                Value(password.Get()),
                 OnInput(password.Set),
                 Required(),
             ),
@@ -5653,7 +6187,7 @@ document.querySelectorAll('[data-island]').forEach(async (el) => {
 
 **Patching rule (island boundary)**
 
-The server patch engine treats islands as opaque subtrees. It may update container attributes or props payloads, or replace the entire container (triggering destroy/remount), but it must not patch inside the island-managed subtree.
+See §6.5.7 for the canonical island boundary invariant. JavaScript islands follow the same opaque-subtree rule: the server may update the container or replace it, but MUST NOT patch inside the island-managed subtree.
 
 ---
 
@@ -5747,7 +6281,7 @@ VangoUI components are Tailwind-based, use CSS variables for theming, and rely o
 100,000 concurrent users × 200 KB = 20 GB
 ```
 
-This is manageable. A single 32 GB server can handle 100k+ concurrent users.
+This is a useful order-of-magnitude estimate. Real capacity depends on component complexity, session churn, patch rates, and persistence settings.
 
 ### 14.2 Reducing Memory Usage
 
@@ -5775,7 +6309,7 @@ vango.Config{
 **State externalization:**
 ```go
 // Store large state in Redis, not memory
-tasks := vango.Signal([]Task{}).Store(redis.Store)
+tasks := vango.NewSignal([]Task{}).Store(redis.Store)
 ```
 
 ### 14.3 WebSocket Scaling
@@ -5824,7 +6358,7 @@ Hybrid builds include an island bundle analyzer (see WASM islands) that reports 
 
 ---
 
-### 14.6 Observability (Phase 13)
+### 14.6 Observability
 
 Vango adopts a **middleware-first** observability model:
 
@@ -5863,6 +6397,10 @@ Div(Text(userInput))  // <script> becomes &lt;script&gt;
 // Explicit opt-in for raw HTML
 Div(DangerouslySetInnerHTML(trustedHTML))
 ```
+
+> **Security Warning**: `DangerouslySetInnerHTML` MUST only accept trusted or sanitized HTML; it bypasses all framework-level XSS escaping.
+
+`DangerouslySetInnerHTML(...)` is the canonical unsafe HTML escape hatch. `Raw(...)` is a legacy alias.
 
 #### Attribute Sanitization
 
@@ -5931,7 +6469,7 @@ vango.Config{
 }
 ```
 
-### 15.6 Protocol Defense (Phase 13)
+### 15.6 Protocol Defense
 
 The binary protocol includes allocation + nesting limits to prevent DoS and stack overflow attacks:
 
@@ -5943,7 +6481,7 @@ The binary protocol includes allocation + nesting limits to prevent DoS and stac
 | Max patch depth | 128 | Prevent stack overflow |
 | Hard cap | 16MB | Absolute ceiling |
 
-Phase 13 adds fuzz testing for protocol decoders to ensure invalid inputs return errors (never panics).
+Production hardening adds fuzz testing for protocol decoders to ensure invalid inputs return errors (never panics).
 
 ### 15.7 Event Handler Safety
 
@@ -6098,9 +6636,9 @@ func TestCounter(t *testing.T) {
 func TestSignalUpdates(t *testing.T) {
     ctx := vango.TestContext()
 
-    count := ctx.Signal(0)
+    count := ctx.NewSignal(0)
     tree := ctx.Render(func() *vango.VNode {
-        return Div(Textf("Count: %d", count()))
+        return Div(Textf("Count: %d", count.Get()))
     })
 
     assert.Equal(t, "Count: 0", tree.Text())
@@ -6226,7 +6764,7 @@ vango build
 vango test
 ```
 
-`vango.json` drives generation paths and static serving (Phase 14):
+`vango.json` drives generation paths and static serving:
 
 ```json
 {
@@ -6272,8 +6810,8 @@ ERROR in /projects/123
 
   Signal read outside component context
 
-    count := vango.Signal(0)
-    value := count()  // ← Error: no active component
+    count := vango.NewSignal(0)
+    value := count.Get()  // ← Error: no active component
 
   Hint: Signal reads must happen inside a component's render function
         or an Effect. Move this code inside vango.Func(func() {...})
@@ -6314,7 +6852,7 @@ HYDRATION MISMATCH at /dashboard
 
 ## 18. Migration Guide
 
-### 17.1 From React
+### 18.1 From React
 
 **React:**
 ```jsx
@@ -6334,10 +6872,10 @@ function Counter({ initial }) {
 ```go
 func Counter(initial int) vango.Component {
     return vango.Func(func() *vango.VNode {
-        count := vango.Signal(initial)
+        count := vango.NewSignal(initial)
 
         return Div(Class("counter"),
-            H1(Textf("Count: %d", count())),
+            H1(Textf("Count: %d", count.Get())),
             Button(OnClick(count.Inc), Text("+")),
         )
     })
@@ -6347,13 +6885,13 @@ func Counter(initial int) vango.Component {
 **Key differences:**
 | React | Vango |
 |-------|-------|
-| `useState` | `vango.Signal` |
+| `useState` | `vango.NewSignal` |
 | `useEffect` | `vango.Effect` |
-| `useMemo` | `vango.Memo` |
+| `useMemo` | `vango.NewMemo` |
 | JSX | Function calls |
 | Runs in browser | Runs on server |
 
-### 17.2 From Vue
+### 18.2 From Vue
 
 **Vue:**
 ```vue
@@ -6374,17 +6912,17 @@ const count = ref(0)
 ```go
 func Counter(initial int) vango.Component {
     return vango.Func(func() *vango.VNode {
-        count := vango.Signal(initial)
+        count := vango.NewSignal(initial)
 
         return Div(Class("counter"),
-            H1(Textf("Count: %d", count())),
+            H1(Textf("Count: %d", count.Get())),
             Button(OnClick(count.Inc), Text("+")),
         )
     })
 }
 ```
 
-### 17.3 Gradual Migration
+### 18.3 Gradual Migration
 
 You can migrate incrementally:
 
@@ -6407,7 +6945,7 @@ func LegacyDashboard() *vango.VNode {
 
 ## 19. Examples
 
-### 18.1 Todo App
+### 19.1 Todo App
 
 ```go
 // app/routes/todos.go
@@ -6415,23 +6953,45 @@ package routes
 
 func Page(ctx vango.Ctx) vango.Component {
     return vango.Func(func() *vango.VNode {
-        todos := vango.Signal([]Todo{})
-        newTodo := vango.Signal("")
+        rctx := vango.UseCtx()
+        todos := vango.NewSignal([]Todo{})
+        newTodo := vango.NewSignal("")
 
         // Load todos from database
         vango.Effect(func() vango.Cleanup {
-            items, _ := db.Todos.ForUser(ctx.UserID())
-            todos.Set(items)
-            return nil
+            userID := ctx.UserID()
+            cctx, cancel := context.WithCancel(rctx.StdContext())
+
+            go func(userID string) {
+                items, err := db.Todos.ForUser(cctx, userID)
+                if err != nil && cctx.Err() != nil {
+                    return // cancelled; ignore
+                }
+                rctx.Dispatch(func() {
+                    if cctx.Err() != nil {
+                        return // cancelled; ignore
+                    }
+                    if err != nil {
+                        todos.Set([]Todo{})
+                        return
+                    }
+                    todos.Set(items)
+                })
+            }(userID)
+
+            return cancel
         })
 
         addTodo := func() {
-            if newTodo() == "" {
+            if newTodo.Get() == "" {
                 return
             }
-            todo := db.Todos.Create(ctx.UserID(), newTodo())
+            todo := db.Todos.Create(ctx.UserID(), newTodo.Get())
             todos.Update(func(t []Todo) []Todo {
-                return append(t, todo)
+                next := make([]Todo, 0, len(t)+1)
+                next = append(next, t...)
+                next = append(next, todo)
+                return next
             })
             newTodo.Set("")
         }
@@ -6440,12 +7000,14 @@ func Page(ctx vango.Ctx) vango.Component {
             return func() {
                 db.Todos.Toggle(id)
                 todos.Update(func(t []Todo) []Todo {
-                    for i := range t {
-                        if t[i].ID == id {
-                            t[i].Done = !t[i].Done
+                    next := make([]Todo, len(t))
+                    copy(next, t)
+                    for i := range next {
+                        if next[i].ID == id {
+                            next[i].Done = !next[i].Done
                         }
                     }
-                    return t
+                    return next
                 })
             }
         }
@@ -6456,7 +7018,7 @@ func Page(ctx vango.Ctx) vango.Component {
             Form(OnSubmit(addTodo), Class("add-form"),
                 Input(
                     Type("text"),
-                    Value(newTodo()),
+                    Value(newTodo.Get()),
                     OnInput(newTodo.Set),
                     Placeholder("What needs to be done?"),
                 ),
@@ -6464,7 +7026,7 @@ func Page(ctx vango.Ctx) vango.Component {
             ),
 
             Ul(Class("todo-list"),
-                Range(todos(), func(todo Todo, i int) *vango.VNode {
+                Range(todos.Get(), func(todo Todo, i int) *vango.VNode {
                     return Li(
                         Key(todo.ID),
                         Class("todo-item"),
@@ -6484,32 +7046,35 @@ func Page(ctx vango.Ctx) vango.Component {
 }
 ```
 
-### 18.2 Real-time Chat
+### 19.2 Real-time Chat
 
 ```go
 func ChatRoom(roomID string) vango.Component {
     return vango.Func(func() *vango.VNode {
-        messages := vango.GlobalSignal([]Message{})  // Shared across all users
-        input := vango.Signal("")
+        messages := vango.NewGlobalSignal([]Message{})  // Shared across all users
+        input := vango.NewSignal("")
 
         sendMessage := func() {
-            if input() == "" {
+            if input.Get() == "" {
                 return
             }
             msg := Message{
                 User:    currentUser(),
-                Text:    input(),
+                Text:    input.Get(),
                 Time:    time.Now(),
             }
             messages.Update(func(m []Message) []Message {
-                return append(m, msg)
+                next := make([]Message, 0, len(m)+1)
+                next = append(next, m...)
+                next = append(next, msg)
+                return next
             })
             input.Set("")
         }
 
         return Div(Class("chat-room"),
             Div(Class("messages"),
-                Range(messages(), func(msg Message, i int) *vango.VNode {
+                Range(messages.Get(), func(msg Message, i int) *vango.VNode {
                     return Div(Class("message"),
                         Strong(Text(msg.User.Name)),
                         Span(Text(msg.Text)),
@@ -6521,7 +7086,7 @@ func ChatRoom(roomID string) vango.Component {
             Form(OnSubmit(sendMessage), Class("input-area"),
                 Input(
                     Type("text"),
-                    Value(input()),
+                    Value(input.Get()),
                     OnInput(input.Set),
                     Placeholder("Type a message..."),
                 ),
@@ -6532,21 +7097,43 @@ func ChatRoom(roomID string) vango.Component {
 }
 ```
 
-### 18.3 Dashboard with Charts
+### 19.3 Dashboard with Charts
 
 ```go
 func Dashboard() vango.Component {
     return vango.Func(func() *vango.VNode {
-        stats := vango.Signal[*Stats](nil)
-        period := vango.Signal("week")
+        rctx := vango.UseCtx()
+        stats := vango.NewSignal[*Stats](nil)
+        period := vango.NewSignal("week")
 
         vango.Effect(func() vango.Cleanup {
-            s, _ := analytics.GetStats(period())
-            stats.Set(s)
-            return nil
+            p := period.Get() // Tracked
+            cctx, cancel := context.WithCancel(rctx.StdContext())
+
+            go func(p string) {
+                s, err := analytics.GetStats(cctx, p)
+                if err != nil && cctx.Err() != nil {
+                    return // cancelled; ignore
+                }
+                rctx.Dispatch(func() {
+                    if cctx.Err() != nil {
+                        return // cancelled; ignore
+                    }
+                    if period.Peek() != p {
+                        return // stale; ignore
+                    }
+                    if err != nil {
+                        stats.Set(nil)
+                        return
+                    }
+                    stats.Set(s)
+                })
+            }(p)
+
+            return cancel
         })
 
-        if stats() == nil {
+        if stats.Get() == nil {
             return Loading()
         }
 
@@ -6554,7 +7141,7 @@ func Dashboard() vango.Component {
             Header(
                 H1(Text("Dashboard")),
                 Select(
-                    Value(period()),
+                    Value(period.Get()),
                     OnChange(period.Set),
                     Option(Value("day"), Text("Today")),
                     Option(Value("week"), Text("This Week")),
@@ -6563,16 +7150,16 @@ func Dashboard() vango.Component {
             ),
 
             Div(Class("stats-grid"),
-                StatCard("Revenue", stats().Revenue, "+12%"),
-                StatCard("Users", stats().Users, "+5%"),
-                StatCard("Orders", stats().Orders, "+8%"),
+                StatCard("Revenue", stats.Get().Revenue, "+12%"),
+                StatCard("Users", stats.Get().Users, "+5%"),
+                StatCard("Orders", stats.Get().Orders, "+8%"),
             ),
 
             // JS island for complex chart
             JSIsland("revenue-chart",
                 JSModule("/js/charts.js"),
                 JSProps{
-                    "data": stats().RevenueHistory,
+                    "data": stats.Get().RevenueHistory,
                     "type": "area",
                 },
             ),
@@ -6637,6 +7224,8 @@ A: Single binary. Deploy like any Go server. No Node.js, no build step in produc
 ## 21. Appendix: Protocol Specification
 
 ### 21.1 WebSocket Handshake
+
+The handshake is sent as a JSON **text frame**. After the server replies with `HANDSHAKE_ACK`, all subsequent messages are **binary frames** following the formats in §21.2 and §21.3.
 
 ```
 Client → Server:
@@ -6779,7 +7368,7 @@ This keeps small numbers (most HIDs, lengths) as single bytes.
 |------|---------|-------|
 | 2024-12-06 | 2.0 | Complete rewrite: server-driven primary architecture |
 | 2024-12-24 | 2.1 | Session durability (SessionStore + serialization), URLParam 2.0, production hardening/observability, CLI scaffold updates |
-| 2026-01-02 | 2.2 | Transactions & Snapshots (Tx + Dispatch), WASM islands spec (two-tier Hybrid runtime, build analyzer + budgets), island boundary patching rules |
+| 2026-01-01 | 2.2 | Transactions & Snapshots (Tx + Dispatch), WASM islands spec (two-tier Hybrid runtime, build analyzer + budgets), island boundary patching rules |
 
 ---
 
