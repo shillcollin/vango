@@ -27,38 +27,6 @@ Client applies patches to DOM → User sees update (~50-100ms total)
 
 ---
 
-## Repository Structure
-
-```
-/Users/collinshill/Documents/vango/
-├── VANGO_ARCHITECTURE_AND_GUIDE.md   # THE authoritative spec (7000+ lines)
-├── CLAUDE.md                          # This file
-├── vango/                             # V1 implementation (reference only, was never launched)
-└── vango_v2/                          # V2 implementation (active development)
-    └── build_docs/
-        ├── BUILD_ROADMAP.md           # Phases, milestones, dependencies
-        ├── PHASE_01_CORE.md           # Reactive system (Signal, Memo, Effect)
-        ├── PHASE_02_VDOM.md           # Virtual DOM and diffing
-        ├── PHASE_03_PROTOCOL.md       # Binary wire protocol
-        ├── PHASE_04_RUNTIME.md        # Server session management
-        ├── PHASE_05_CLIENT.md         # Thin JavaScript client
-        ├── PHASE_06_SSR.md            # Server-side rendering
-        ├── PHASE_07_ROUTING.md        # File-based routing
-        ├── PHASE_08_FEATURES.md       # Forms, Resources, Hooks, etc.
-        ├── PHASE_09_DX.md             # Developer experience basics
-        ├── PHASE_10.md                # Routing, Middleware, Authentication
-        ├── PHASE_11.md                # Security Hardening
-        ├── PHASE_12.md                # Session Resilience & State Persistence
-        ├── PHASE_13.md                # Production Hardening & Observability (OTel, Prometheus)
-        ├── PHASE_14.md                # CLI Scaffold Specification (vango create, vango gen)
-        ├── PHASE_15.md                # VangoUI Component System
-        └── PHASE_16.md                # Unified Context & Platform Capabilities
-```
-
----
-
-## Key Documentation References
-
 ### Primary Specification
 - **`VANGO_ARCHITECTURE_AND_GUIDE.md`** - The complete framework specification
   - Section 3.9: Frontend API Reference (all elements, attributes, events)
@@ -128,7 +96,7 @@ Phase 1: Reactive Core (Signal, Memo, Effect)
                                        └── Phase 9: Developer Experience
                                             └── Phase 10: Middleware, Auth, Router
                                                  └── Phase 11: Security Hardening
-                                                      └── Phase 12: Session Resilience & Persistence <- We are here
+                                                      └── Phase 12: Session Resilience & Persistence
                                                            └── Phase 13: Production Hardening (OTel, Prometheus)
                                                                 └── Phase 14: CLI & Scaffold
                                                                      └── Phase 15: VangoUI Component System
@@ -157,58 +125,6 @@ Check `vango_v2/docs/BUILD_ROADMAP.md` for current phase status and next steps.
 3. **Test incrementally** - Each phase should be fully tested before moving on
 4. **Milestone checkpoints** - Verify end-to-end functionality at key points
 
----
-
-## Common Patterns
-
-### Component Structure
-```go
-func Counter(initial int) vango.Component {
-    return vango.Func(func() *vango.VNode {
-        count := vango.Signal(initial)
-
-        return Div(Class("counter"),
-            H1(Textf("Count: %d", count())),
-            Button(OnClick(count.Inc), Text("+")),
-        )
-    })
-}
-```
-
-### Element Creation (vango/el package)
-```go
-import . "vango/el"
-
-Div(Class("card"), ID("main"),
-    H1(Text("Title")),
-    P(Text("Content")),
-    Button(OnClick(handler), Text("Click")),
-)
-```
-
-### Reactive State
-```go
-// Local signal (component-scoped)
-count := vango.Signal(0)
-
-// Read (subscribes component)
-value := count()
-
-// Write (triggers re-render)
-count.Set(5)
-count.Update(func(n int) int { return n + 1 })
-
-// Derived state
-doubled := vango.Memo(func() int { return count() * 2 })
-
-// Side effects
-vango.Effect(func() vango.Cleanup {
-    fmt.Println("Count changed:", count())
-    return func() { /* cleanup */ }
-})
-```
-
----
 
 ## When Starting a New Session
 

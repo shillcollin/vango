@@ -48,219 +48,6 @@ status: RFC
 
 ---
 
-## Implementation Audit Status
-
-> **This section tracks verification of the V2 implementation against this spec.**
-
-| Phase | Scope | Status | Date | Notes |
-|-------|-------|--------|------|-------|
-| **Phase 1: Reactive Core** | Signal, Memo, Effect, Batch, Owner | ✅ **VERIFIED** | 2026-01-02 | 112 tests, 90.9% coverage, race detector passes |
-| **Phase 2: Virtual DOM** | VNode, Diff, Patch, Elements, Events | ✅ **VERIFIED** | 2026-01-02 | 85 tests, 95.1% coverage, race detector passes |
-| **Phase 3: Binary Protocol** | Events, Patches, Wire format | ✅ **VERIFIED** | 2026-01-02 | 85 tests, 12 fuzz targets, benchmarks ~50ns/op |
-| **Phase 4: Server Runtime** | Sessions, Handlers, Context | ✅ **VERIFIED** | 2026-01-02 | 125 tests, 34.2% coverage, full spec compliance |
-| Phase 5: Thin Client | JavaScript client | ⏳ Pending | | |
-| Phase 6: SSR & Hydration | Server-side rendering | ⏳ Pending | | |
-| Phase 7: Routing | File-based routing | ⏳ Pending | | |
-| Phase 8+: Features | Forms, Resources, Hooks, etc. | ⏳ Pending | | |
-
-### Phase 1 Verification Details
-
-**Verified Components:**
-- `Signal[T]` with Get, Set, Update, Peek, WithEquals, ID
-- `Memo[T]` with Get, Peek, MarkDirty, WithEquals, lazy evaluation
-- `Effect` with CreateEffect, cleanup lifecycle, dynamic dependencies
-- `Batch` with deduplication, nested batching, panic recovery
-- `Untracked` for dependency-free reads
-- `Owner` with hierarchical disposal, cleanup ordering (LIFO)
-- Lifecycle hooks: OnMount, OnUnmount, OnUpdate
-
-**Typed Signal Wrappers Verified:**
-- IntSignal: Inc, Dec, Add, Sub, Mul, Div
-- Int64Signal: Inc, Dec, Add, Sub, Mul, Div
-- Float64Signal: Add, Sub, Mul, Div
-- BoolSignal: Toggle, SetTrue, SetFalse
-- StringSignal: Append, Prepend, Clear, Len, IsEmpty
-- SliceSignal[T]: Append, AppendAll, Prepend, InsertAt, RemoveAt, RemoveFirst, RemoveLast, RemoveWhere, UpdateAt, UpdateWhere, Filter, SetAt, Clear, Len
-- MapSignal[K,V]: SetKey, GetKey, HasKey, RemoveKey, DeleteKey (deprecated), UpdateKey, Keys, Values, Clear, Len
-
-**Test Quality Assessment:**
-- Tests verify behavior, not implementation details
-- Comprehensive edge cases (nil values, same-value updates, panics)
-- Thorough concurrency testing (100 goroutines × 100 iterations)
-- Integration tests verify component interaction
-- Cleanup ordering explicitly verified
-
-**Code Quality Assessment:**
-- Thread-safe: RWMutex for values, copy-before-notify pattern
-- Memory-safe: Owner hierarchy with cascading disposal
-- Correct equality: fast path for primitives, DeepEqual fallback
-
-**Not Yet Implemented (deferred to later phases per spec):**
-- SharedSignal, GlobalSignal (Phase 8)
-- Resource (Phase 8)
-- Signal Metadata: IsDirty, SubscriberCount, Named (Phase 9/DevTools)
-- Transactions: Snapshot, SnapshotGet (v2.2) - Note: Tx and TxNamed implemented in Phase 4
-
-### Phase 2 Verification Details
-
-**Verified Components:**
-- `VNode` struct with Kind, Tag, Props, Children, Key, Text, Comp, HID fields
-- `VKind` constants: KindElement, KindText, KindFragment, KindComponent, KindRaw
-- `Props` map type for attributes and event handlers
-- `Component` interface with Render() method, FuncComponent wrapper
-- `Patch` struct with all required operations
-- `PatchOp` constants: SetText, SetAttr, RemoveAttr, InsertNode, RemoveNode, MoveNode, ReplaceNode, SetValue, SetChecked, SetSelected, Focus
-
-**HTML Elements Verified (112 total):**
-- Document structure: Html, Head, Body, Title, Meta, Link, Base, Script, Style, Noscript, Template, Slot
-- Content sectioning: Header, Footer, Main, Nav, Section, Article, Aside, H1-H6, Hgroup, Address
-- Text content: Div, P, Span, Pre, Blockquote, Ul, Ol, Li, Dl, Dt, Dd, Hr, Figure, Figcaption
-- Inline text: A, Strong, Em, B, I, U, S, Small, Mark, Sub, Sup, Code, Kbd, Samp, Var, Abbr, Time_, Cite, Q, Dfn, Ruby, Rt, Rp, Bdi, Bdo, DataElement, Br, Wbr
-- Forms: Form, Input, Textarea, Select, Option, Optgroup, Button, Label, Fieldset, Legend, Datalist, Output, Progress, Meter
-- Tables: Table, Thead, Tbody, Tfoot, Tr, Th, Td, Caption, Colgroup, Col
-- Media: Img, Picture, Source, Video, Audio, Track, Iframe, Embed, Object, Param, Canvas, Svg, Math, Map_, Area
-- Interactive: Details, Summary, Dialog, Menu
-- CustomElement for custom tag names
-
-**Attributes Verified (103 total):**
-- Identity: ID, Class, StyleAttr, Data
-- Accessibility: Role, AriaLabel, AriaHidden, AriaExpanded, AriaDescribedBy, AriaLabelledBy, AriaLive, AriaControls, AriaCurrent, AriaDisabled, AriaPressed, AriaSelected, AriaHasPopup, AriaModal, AriaAtomic, AriaBusy, AriaValueNow, AriaValueMin, AriaValueMax
-- Keyboard: TabIndex, AccessKey
-- Visibility: Hidden, TitleAttr
-- Behavior: ContentEditable, Draggable, Spellcheck, Lang, Dir
-- Link: Href, Target, Rel, Download, Hreflang
-- Form inputs: Name, Value, Type, Placeholder, Disabled, Readonly, Required, Checked, Selected, Multiple, Autofocus, Autocomplete, Pattern, MinLength, MaxLength, Min, Max, Step, Accept, Capture, Rows, Cols, Wrap, Action, Method, Enctype, Novalidate, For, FormAttr, List, Inputmode, Enterkeyhint
-- Media: Src, Alt, Width, Height, Loading, Decoding, Srcset, SizesAttr, Controls, Autoplay, Loop, MutedAttr, Preload, Poster, Playsinline
-- Iframe: Sandbox, Allow, Allowfullscreen
-- Table: Colspan, Rowspan, Scope, HeadersAttr
-- Meta/Link: Charset, Content, HttpEquiv
-- Script: Defer_, Async, Crossorigin, Integrity
-- Interactive: Open
-- Conditional: ClassIf, AttrIf, Classes
-
-**Events Verified (78 total):**
-- Mouse: OnClick, OnDblClick, OnMouseDown/Up/Move/Enter/Leave/Over/Out, OnContextMenu, OnWheel
-- Keyboard: OnKeyDown, OnKeyUp, OnKeyPress
-- Form: OnInput, OnChange, OnSubmit, OnFocus, OnBlur, OnFocusIn, OnFocusOut, OnSelect, OnInvalid, OnReset
-- Drag: OnDragStart, OnDrag, OnDragEnd, OnDragEnter, OnDragOver, OnDragLeave, OnDrop
-- Touch: OnTouchStart, OnTouchMove, OnTouchEnd, OnTouchCancel
-- Pointer: OnPointerDown/Up/Move/Enter/Leave/Cancel
-- Scroll: OnScroll, OnScrollEnd
-- Media: OnPlay, OnPause, OnEnded, OnTimeUpdate, OnLoadStart, OnLoadedData, OnLoadedMetadata, OnCanPlay, OnCanPlayThrough, OnProgress, OnSeeking, OnSeeked, OnVolumeChange, OnRateChange, OnDurationChange, OnWaiting, OnPlaying, OnStalled, OnSuspend, OnEmptied
-- Error/Load: OnError, OnLoad, OnAbort
-- Animation: OnAnimationStart/End/Iteration/Cancel
-- Transition: OnTransitionStart/End/Run/Cancel
-- Clipboard: OnCopy, OnCut, OnPaste
-- Toggle: OnToggle
-
-**Helper Functions Verified:**
-- Text, Textf, Raw (with security warning)
-- Fragment, Group
-- If, IfElse, When/IfLazy/ShowWhen (lazy evaluation)
-- Unless, Show, Hide
-- Switch with Case_ and Default
-- Range, RangeMap, Repeat
-- Key, Nothing, Either, Maybe
-- NavLink for SPA navigation
-
-**Diff Algorithm Verified:**
-- Keyed reconciliation with move detection
-- Unkeyed children positional matching
-- Node type changes trigger replacement
-- Tag changes trigger replacement
-- Props diffing (add, remove, update attributes)
-- Text content updates
-- Raw HTML replacement
-- Component rendering and diffing
-- Event handlers filtered from attribute diffing (case-insensitive security check)
-
-**HID Generation Verified:**
-- HIDGenerator with thread-safe counter
-- AssignHIDs for all element nodes
-- AssignAllHIDs for debugging
-- CollectHIDs, FindByHID, CountInteractive, ClearHIDs, CopyHIDs utilities
-
-**Go Naming Conventions (documented):**
-- `Time_()` → avoids conflict with `time` package
-- `Map_()` → avoids conflict with built-in `map` type
-- `DataElement()` → avoids conflict with `Data()` attribute
-- `TitleAttr()` → avoids conflict with `Title()` element
-- `StyleAttr()` → avoids conflict with `Style()` element
-- `Defer_()` → avoids conflict with `defer` keyword
-
-### Phase 4 Verification Details
-
-**Session Management (§4.1) Verified:**
-- `Session` struct with ID, Conn, Signals, Components, LastTree, Handlers
-- Session lifecycle: connect, render, interaction loop, disconnect, reconnect
-- Session states: Connected, Detached (via closed flag)
-- `SessionConfig` with timeouts, limits, and feature flags
-- `SessionManager` with create, get, close, cleanup, shutdown
-- Cryptographically secure session ID generation (crypto/rand)
-- Session data storage with thread-safe Get/Set/Delete
-
-**Event Loop (§4.2) Verified:**
-- Three goroutines: ReadLoop, WriteLoop, EventLoop
-- Event handling with handler lookup and panic recovery
-- Dirty component re-rendering after handler execution
-- Pending effects run after handler completion
-- `dispatchCh` for goroutine-safe dispatch (ctx.Dispatch support)
-
-**Binary Protocol (§4.3) Verified:**
-- Event frame decoding and routing
-- Control frame handling (ping, pong, resync, close)
-- Ack frame processing for reliable delivery
-- Patch encoding and sending with sequence numbers
-
-**Hydration IDs (§4.4) Verified:**
-- `HIDGenerator` with thread-safe counter
-- HID assignment during component mounting
-- Handler registry maps HID to event handlers
-
-**Component Mounting (§4.5) Verified:**
-- `ComponentInstance` with Owner hierarchy
-- `MountRoot` with component rendering, HID assignment, handler collection
-- Child component mounting with proper ownership
-
-**Context Propagation (§7) Verified:**
-- `vango.UseCtx()` returns runtime context during render/effect/handler
-- `vango.Ctx` interface with Dispatch() and StdContext()
-- `ctx.Dispatch()` queues work to session event loop (goroutine-safe)
-- `ctx.StdContext()` returns context for trace propagation
-- `vango.WithCtx()` sets context for nested execution
-- Context set during handleEvent() and ComponentInstance.Render()
-
-**Transactions (§7) Verified:**
-- `Tx(fn func())` alias for Batch (atomic signal updates)
-- `TxNamed(name string, fn func())` with debug logging
-- Batch is alias for Tx per spec
-- Nested transaction support
-
-**Request Context (Ctx) Verified:**
-- Full Ctx interface: Request, Path, Method, Query, Param, Header, Cookie
-- Response control: Status, Redirect, SetHeader, SetCookie
-- Session access: Session(), User(), SetUser()
-- Lifecycle: Done(), Logger()
-- Request-scoped values: SetValue(), Value()
-- Custom events: Emit() via protocol.NewDispatchPatch
-- Metrics: Event(), PatchCount(), AddPatchCount()
-- Context propagation: StdContext(), WithStdContext()
-
-**Metrics & Monitoring Verified:**
-- `MetricsCollector` with atomic counters
-- Session, event, patch, byte, error, and latency metrics
-- Concurrent-safe metric recording
-
-**Test Quality Assessment:**
-- 125 tests passing with 34.2% coverage
-- Session lifecycle tests (create, close, resume)
-- Event handling tests with panic recovery
-- Handler registration and invocation tests
-- Metrics collection tests with concurrency
-- Integration tests for WebSocket handshake
-
----
-
 ## Document Conventions
 
 This guide mixes **normative specification** with **informative explanation**.
@@ -850,13 +637,6 @@ This section provides a complete reference for all Vango frontend APIs. For quic
 
 ### 3.9.1 HTML Elements
 
-> **🔍 AUDIT STATUS: Phase 2 VERIFIED (2026-01-02)**
-> - 112 element functions implemented (exceeds spec's 95)
-> - All document, sectioning, text, inline, form, table, media, interactive elements
-> - CustomElement() for custom tag names
-> - Void elements properly tracked (br, hr, img, input, etc.)
-> - Go naming: Time_(), Map_(), DataElement() avoid conflicts
-
 All standard HTML elements are available as functions. Import with dot notation for concise syntax:
 
 ```go
@@ -945,7 +725,7 @@ func Button(args ...any) *vango.VNode
 | `Samp()` | Sample output | Output styling |
 | `Var()` | Variable | Variable styling |
 | `Abbr()` | Abbreviation | With title tooltip |
-| `Time()` | Time | Datetime value |
+| `Time_()` | Time | Datetime value |
 | `Br()` | Line break | Newline |
 | `Wbr()` | Word break | Optional break |
 
@@ -1012,12 +792,6 @@ func Button(args ...any) *vango.VNode
 
 ### 3.9.2 Attributes
 
-> **🔍 AUDIT STATUS: Phase 2 VERIFIED (2026-01-02)**
-> - 103 attribute functions implemented (exceeds spec's 80+)
-> - All ARIA attributes including AriaAtomic, AriaBusy
-> - Conditional: ClassIf, AttrIf, Classes (string, []string, map[string]bool)
-> - Go naming: TitleAttr(), StyleAttr() avoid element conflicts
-
 Attributes are functions that return attribute values. They can be mixed with children in element calls.
 
 #### Global Attributes
@@ -1058,7 +832,7 @@ AccessKey("s")              // accesskey="s"
 
 // Visibility
 Hidden()                    // hidden
-Title("Tooltip text")       // title="Tooltip text"
+TitleAttr("Tooltip text")       // title="Tooltip text"
 
 // Behavior
 ContentEditable(true)       // contenteditable="true"
@@ -1231,13 +1005,6 @@ Attr("x-custom", "value")   // x-custom="value"
 ---
 
 ### 3.9.3 Event Handlers
-
-> **🔍 AUDIT STATUS: Phase 2 VERIFIED (2026-01-02)**
-> - 78 event handler functions implemented (exceeds spec's 70+)
-> - Mouse, keyboard, form, drag, touch, pointer, scroll, media events
-> - Animation and transition events
-> - Clipboard and toggle events
-> - Event handlers prefixed with "on" automatically
 
 Event handlers trigger server-side callbacks or client-side behavior.
 
@@ -1615,13 +1382,6 @@ OnKeyDown(vango.KeyWithModifiers("s", vango.Ctrl|vango.Shift, func() {
 
 ### 3.9.4 Signal API
 
-> **🔍 AUDIT STATUS: Phase 1 VERIFIED (2026-01-02)**
-> - Core Signal[T]: ✅ Get, Set, Update, Peek, WithEquals, ID
-> - Typed wrappers: ✅ IntSignal, Int64Signal, Float64Signal, BoolSignal, StringSignal, SliceSignal, MapSignal
-> - Convenience methods: ✅ All numeric, boolean, string, slice, and map methods implemented
-> - Batching: ✅ Batch() with deduplication, nesting, panic recovery
-> - Deferred: SharedSignal, GlobalSignal (Phase 8), Metadata methods (Phase 9), Transactions (v2.2)
-
 Signals are reactive values that trigger re-renders when changed.
 
 #### Canonical Signatures
@@ -1801,13 +1561,6 @@ In v2.2+, `Batch` is a compatibility alias for an anonymous Transaction (Tx). Se
 
 ### 3.9.5 Memo API
 
-> **🔍 AUDIT STATUS: Phase 1 VERIFIED (2026-01-02)**
-> - Core Memo[T]: ✅ NewMemo, Get, Peek, MarkDirty, WithEquals, ID
-> - Lazy evaluation: ✅ Computes only on first read, caches until invalidated
-> - Dependency tracking: ✅ Automatic, dynamic dependencies, diamond pattern tested
-> - Memo chains: ✅ Memos depending on other memos work correctly
-> - Deferred: SharedMemo, GlobalMemo (Phase 8)
-
 Memos are cached computations that update when dependencies change.
 
 #### Creating Memos
@@ -1888,14 +1641,6 @@ total := vango.NewMemo(func() float64 {
 ---
 
 ### 3.9.6 Effect API
-
-> **🔍 AUDIT STATUS: Phase 1 VERIFIED (2026-01-02)**
-> - Core Effect: ✅ CreateEffect with cleanup lifecycle
-> - Lifecycle hooks: ✅ OnMount, OnUnmount, OnUpdate (two-function signature)
-> - Cleanup ordering: ✅ Cleanup runs before re-run and on dispose
-> - Dynamic dependencies: ✅ Dependencies re-tracked on each run
-> - Owner integration: ✅ Effects disposed with owner hierarchy
-> - Note: ctx.Dispatch, ctx.StdContext require Phase 4 (Server Runtime)
 
 Effects run after render and handle side effects.
 
@@ -2353,14 +2098,6 @@ vango.OnMount(func() {
 ---
 
 ### 3.9.9 Helper Functions
-
-> **🔍 AUDIT STATUS: Phase 2 VERIFIED (2026-01-02)**
-> - Conditional: If, IfElse, When/IfLazy/ShowWhen (lazy), Unless, Show, Hide
-> - Switch with Case_ and Default generics
-> - Iteration: Range, RangeMap, Repeat
-> - Text: Text, Textf, Raw (with security warning)
-> - Structure: Fragment, Group, Key, Nothing, Either, Maybe
-> - Navigation: NavLink for SPA routing
 
 #### Conditional Rendering
 
