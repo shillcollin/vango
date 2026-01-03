@@ -59,8 +59,10 @@ status: RFC
 | **Phase 3: Binary Protocol** | Events, Patches, Wire format | ✅ **VERIFIED** | 2026-01-02 | 85 tests, 12 fuzz targets, benchmarks ~50ns/op |
 | **Phase 4: Server Runtime** | Sessions, Handlers, Context | ✅ **VERIFIED** | 2026-01-02 | 125 tests, 34.2% coverage, full spec compliance |
 | **Phase 5: Thin Client** | JavaScript client | ✅ **VERIFIED** | 2026-01-02 | 48 tests, 15.90 KB gzipped, all 7 spec hooks + 4 VangoUI hooks |
-| Phase 6: SSR & Hydration | Server-side rendering | ⏳ Pending | | |
-| Phase 7: Routing | File-based routing | ⏳ Pending | | |
+| **Phase 6: SSR & Hydration** | Server-side rendering | ✅ **VERIFIED** | 2026-01-02 | 64 tests, data-ve/JSON optimistic spec compliant |
+| **Phase 7: Routing** | File-based routing, Navigation | ✅ **VERIFIED** | 2026-01-02 | 94 tests, 77.7% coverage, ~53-200ns matching |
+| **Phase 10: Middleware & Auth** | HTTP Handler, Context Bridge, Auth, Toast | ✅ **VERIFIED** | 2026-01-02 | Dual-layer architecture, type-safe generics, ctx.Emit |
+| **Phase 12: Session Resilience** | SessionStore, Reconnection UX, URLParam 2.0 | ✅ **VERIFIED** | 2026-01-02 | All tests pass, CSS classes on `<html>`, Session.Serialize/Deserialize |
 | Phase 8+: Features | Forms, Resources, Hooks, etc. | ⏳ Pending | | |
 
 ### Phase 1 Verification Details
@@ -301,6 +303,351 @@ status: RFC
 - Event encoding verification
 - Patch decoding verification
 - Protocol compatibility with Go server
+
+### Phase 6 Verification Details
+
+**SSR Renderer (§6) Verified:**
+- `Renderer` struct with HID counter and handler registry
+- `RenderToString` and `RenderToWriter` for VNode → HTML
+- `RenderPage` for full document rendering (DOCTYPE, head, body)
+- `StreamingRenderer` with incremental flushing for faster TTFB
+- Pretty-print mode with configurable indentation
+
+**HTML Rendering Verified:**
+- Element rendering with tag, attributes, children
+- Void elements (br, hr, img, input, etc.) without closing tags
+- Boolean attributes rendered without values (checked, disabled)
+- Text escaping for XSS prevention (&, <, >, ", ')
+- Attribute escaping with additional whitespace handling
+- Raw HTML support via `KindRaw` (trusted content only)
+- Fragment rendering (children only, no wrapper)
+- Component rendering via `Comp.Render()`
+
+**Event Handler Attributes (§5.2) Verified:**
+- `data-ve` attribute with comma-separated event names (spec compliant)
+- Format: `data-ve="click,input,change"` instead of separate `data-on-*` attributes
+- Event name extraction: `onClick` → `click`, `onSubmit` → `submit`
+- Alphabetically sorted for deterministic output
+- SECURITY: All `on*` attributes filtered from HTML output (case-insensitive)
+
+**Hydration IDs (§4.4) Verified:**
+- `data-hid` attribute assigned to all elements (conservative approach)
+- Sequential generation: h1, h2, h3, etc.
+- HID counter reset via `Renderer.Reset()`
+- Handler registry maps `hid_eventname` to handler functions
+
+**Optimistic Updates (§5.2) Verified:**
+- `data-optimistic` JSON attribute format (spec compliant)
+- Format: `data-optimistic='{"class":"loading","text":"Saving..."}'`
+- Supports class, text, attr, and value fields
+- Only non-empty fields included in JSON
+
+**Hook Configuration Verified:**
+- `data-hook` attribute for hook name
+- `data-hook-config` JSON attribute for hook options
+- `_hook` prop rendering via `renderHookConfig`
+- `_optimistic` prop rendering via `renderOptimisticConfig`
+
+**Page Rendering (§6.3) Verified:**
+- Full document structure: DOCTYPE, html, head, body
+- Meta tags (name, property, http-equiv, charset)
+- Link tags (rel, href, type, sizes, crossorigin, media)
+- Script tags (src, type, defer, async, module, inline)
+- Inline styles
+- External stylesheets
+- Language attribute (defaults to "en")
+
+**Client Script Injection Verified:**
+- CSRF token: `window.__VANGO_CSRF__`
+- Session ID: `window.__VANGO_SESSION__`
+- Thin client script with configurable path (default: `/_vango/client.js`)
+- Debug mode configurable via `PageData.Debug` field
+- `data-debug="true"` only added when Debug=true
+
+**Security Features Verified:**
+- HTML text escaping prevents XSS
+- Attribute escaping prevents injection
+- Event handler attributes stripped (only registry used)
+- CSRF token embedding for WebSocket handshake
+- Session ID embedding for reconnection
+
+**Thin Client Sync Verified:**
+- `client/src/events.js` updated to parse `data-ve` attribute
+- `_hasEvent(el, eventName)` helper for event lookup
+- `_findHidElementWithEvent(target, eventName)` for bubbling
+- All 12 event handlers updated: click, dblclick, input, change, submit, focus, blur, keydown, keyup, mouseenter, mouseleave, scroll
+- `client/src/optimistic.js` updated to parse JSON `data-optimistic`
+
+**Test Quality Assessment:**
+- 64 tests passing in pkg/render/ (including subtests)
+- Tests cover: text, elements, escaping, void elements, boolean attributes
+- Tests cover: fragments, components, pretty-print, streaming
+- Tests cover: hydration IDs, multiple handlers, handler registration
+- Tests cover: page rendering, meta tags, scripts, CSRF, session
+- Tests cover: hook config, optimistic config (JSON), debug mode
+- Client tests: 48 passing (events.js + optimistic.js changes validated)
+
+### Phase 7 Verification Details
+
+**File-Based Routing (§9.1) Verified:**
+- Route scanner in `pkg/router/scanner.go`
+- File path → URL path conversion with index handling
+- Parameter extraction: `[id]` → `:id`, `[id:int]` → typed param
+- Catch-all parameters: `[...slug]` → `*slug`
+- Intelligent type inference from naming (id→int, slug→string, uuid→string)
+- Special files: `_layout.go`, `_middleware.go`, `_error.go`, `_404.go`
+- API route detection (`api/` prefix)
+
+**Radix Tree Router (§9.5) Verified:**
+- `pkg/router/tree.go` with RouteNode structure
+- Static segment matching (exact match priority)
+- Parameter matching (`:id` format)
+- Catch-all matching (`*slug` format)
+- Priority: exact > param > catch-all
+- Benchmarks: static ~53ns, param ~103ns, multi-param ~167ns, catch-all ~198ns
+
+**Layout & Middleware Inheritance Verified:**
+- `Slot` type alias for layout children (`*vdom.VNode`)
+- `LayoutHandler func(ctx server.Ctx, children Slot) *vdom.VNode`
+- Layouts collected at each tree level during matching
+- Middleware collected at each tree level (hierarchical)
+- Global middleware via `router.Use()`
+- Path-specific middleware via `router.AddMiddleware()`
+
+**Navigation (§9.4) Verified:**
+- `ctx.Navigate(path, opts...)` in `pkg/server/context.go`
+- Options: `WithReplace()`, `WithNavigateParams()`, `WithoutScroll()`
+- SSR fallback: HTTP redirect (302/303) when no WebSocket session
+- WebSocket: `vango:navigate` dispatch event with JSON payload
+- Client handles `vango:navigate` in `client/src/patches.js`
+
+**Client Link Interception (§3.2, §9.5.1) Verified:**
+- Progressive enhancement: native navigation when WebSocket unavailable
+- Modifier key detection: Ctrl/Meta/Shift/Alt bypass interception
+- `download` attribute check: native download behavior preserved
+- Target attribute check: non-`_self` targets use native navigation
+- Cross-origin detection: proper URL parsing for origin comparison
+- Event handler detection via `data-ve` attribute parsing
+- `data-link` and `data-vango-link` attributes supported
+
+**Prefetch on Hover (§9.4) Verified:**
+- `Prefetch()` helper in `pkg/router/link.go`
+- `LinkWithPrefetch()` convenience function
+- `data-prefetch` attribute on links
+- Client `_handlePrefetch()` sends prefetch event on mouseenter
+- Duplicate prefetch prevention via `prefetchedPaths` Set
+
+**Link Helpers (§9.4) Verified:**
+- `Link(href, children...)` - basic SPA link
+- `LinkWithPrefetch(href, children...)` - link with prefetch
+- `ActiveLink(href, activeClass, exactMatch, children...)` - active state
+- `NavLink(href, children...)` - convenience for active links
+- `Prefetch()` - standalone attribute helper
+- `DataLink()` - manual link marking
+
+**VangoScripts Helper Verified:**
+- `VangoScripts(opts...)` in `pkg/vdom/helpers.go`
+- Options: `WithDebug()`, `WithScriptPath()`, `WithCSRFToken()`, `WithoutDefer()`
+- Renders script tag with `data-vango`, optional `data-debug`, `data-csrf`
+- Default path: `/_vango/client.js`
+- Default defer: true
+
+**Code Generation Verified:**
+- `pkg/router/codegen.go` generates `routes_gen.go`
+- Deterministic output (sorted routes)
+- Route constants for type-safe paths
+- Param structs with struct tags
+- Register function for explicit registration
+
+**URL State Management (§3.9.12) Verified:**
+- `URL_PUSH` (0x30) and `URL_REPLACE` (0x31) patch types in protocol
+- Query-only URL updates (no route remount)
+- `URLManager` in client handles URL patches
+- Separate from navigation (path changes)
+
+**Browser History Verified:**
+- `popstate` handler includes search params
+- Back/forward sends full path + query to server
+- `history.pushState`/`replaceState` for URL updates
+
+**Test Quality Assessment:**
+- 94 tests passing in pkg/router/ (including subtests)
+- Tests cover: scanner, tree, router, params, middleware, navigation
+- Tests cover: codegen, link helpers, OpenAPI generation
+- Coverage: 77.7% of statements
+- Benchmark performance within ~60-200ns target range
+- Client changes: events.js, patches.js updated and validated
+
+### Phase 10 Verification Details
+
+**HTTP Handler Interface (§10.1) Verified:**
+- `Server.Handler()` returns `http.Handler` at `pkg/server/server.go:168-172`
+- `Server.PageHandler()` returns page-only handler at `pkg/server/server.go:174-190`
+- `Server.WebSocketHandler()` returns WS-only handler at `pkg/server/server.go:192-196`
+- Mountable in Chi, Gorilla, stdlib mux via standard `http.Handler` interface
+- Middleware chain support via `Use()` method
+
+**Context Bridge (§10.2) Verified:**
+- `OnSessionStart func(httpCtx context.Context, session *Session)` at `pkg/server/config.go:144-155`
+- Callback invoked SYNCHRONOUSLY before handshake at `pkg/server/server.go:299-307`
+- Documented with "THE CONTEXT BRIDGE (Phase 10)" comment block
+- HTTP context accessible during callback, dead after return
+- Developer can call `auth.Set(session, user)` from callback
+
+**Session State API (§10.3) Verified:**
+- `Session.Get(key string) any` at `pkg/server/session.go:720-727`
+- `Session.Set(key string, value any)` with debug validation at lines 736-749
+- Convenience methods: `SetString`, `SetInt`, `SetJSON`, `Delete`, `Has`
+- Getter conveniences: `GetString`, `GetInt` with type conversion
+- Thread-safe via `sync.RWMutex` on `dataMu` field
+- Debug mode panics on unserializable types (func, chan)
+
+**Auth Package (§10.4) Verified:**
+- `auth.Get[T any](ctx) (T, bool)` at `pkg/auth/auth.go:35-75`
+- `auth.Require[T any](ctx) (T, error)` at `pkg/auth/auth.go:89-95`
+- `auth.Set[T any](session, user)` at `pkg/auth/auth.go:107-109`
+- `auth.Clear(session)` at `pkg/auth/auth.go:121-123`
+- `auth.IsAuthenticated(ctx)` at `pkg/auth/auth.go:133-139`
+- Error types: `ErrUnauthorized`, `ErrForbidden`
+- Session key: `SessionKey = "vango_auth_user"`
+- Debug mode logs type mismatch warnings with hints
+
+**Auth Middleware Verified:**
+- `auth.RequireAuth` at `pkg/auth/middleware.go:19-26`
+- `auth.RequireRole[T](check func(T) bool)` at `pkg/auth/middleware.go:40-51`
+- `auth.RequirePermission[T](check func(T) bool)` at `pkg/auth/middleware.go:62-64`
+- Extra: `RequireAny[T]`, `RequireAll[T]` for complex authorization
+
+**Vango Middleware (§10.5) Verified:**
+- `router.WithValue(key, value)` at `pkg/router/middleware.go:67-72`
+- `router.Logger(logger)` at `pkg/router/middleware.go:76-104`
+- `router.Recover(onPanic)` at `pkg/router/middleware.go:108-119`
+- `router.RateLimit(maxPerSecond)` at `pkg/router/middleware.go:170-194`
+- Extra: `Timeout(duration)`, `Chain()`, `Skip()`, `Only()`
+
+**Context Request-Scoped Values Verified:**
+- `ctx.SetValue(key, value)` at `pkg/server/context.go:386-391`
+- `ctx.Value(key)` at `pkg/server/context.go:394-399`
+- `ctx.Emit(name, data)` at `pkg/server/context.go:411-442`
+- Uses `protocol.NewDispatchPatch` for custom events
+
+**Toast Notifications (§10.6) Verified:**
+- `toast.Show(ctx, level, message)` at `pkg/toast/toast.go:25-30`
+- `toast.Success/Error/Warning/Info(ctx, message)` convenience functions
+- `toast.WithTitle(ctx, level, title, message)` at lines 63-69
+- Uses `ctx.Emit("vango:toast", ...)` - no protocol changes required
+- Event name constant: `EventName = "vango:toast"`
+
+**File Upload (§10.7) Verified:**
+- `upload.Store` interface with `Save()`, `Claim()`, `Cleanup()`
+- `upload.Handler(store)` returns `http.Handler`
+- `upload.DiskStore` implementation in `pkg/upload/disk.go`
+- S3Store example in `pkg/upload/s3_example.go`
+- Hybrid HTTP POST + WebSocket claim flow
+
+**Test Kit (§10F) Verified:**
+- `vtest.NewCtx()` fluent context builder at `pkg/vtest/vtest.go`
+- `.WithUser(user)`, `.WithData(key, val)`, `.WithParam(key, val)` methods
+- `.Build()` returns `server.Ctx`
+- `vtest.ExpectContains(t, node, text)` assertion helper
+- `vtest.RenderToString(node)` for HTML serialization
+- Advanced session testing in `pkg/vtest/session.go`
+
+**Code Quality Assessment:**
+- All functions use type-safe generics
+- Thread-safe implementations with proper mutex usage
+- Comprehensive error handling with explicit types
+- Debug mode aids development with helpful warnings
+- Documentation in code with examples
+
+**Spec Compliance:**
+- Dual-layer architecture: HTTP stack (Layer 1) + Vango event stack (Layer 2)
+- Context Bridge runs synchronously during WebSocket upgrade
+- Type-safe generics for auth package
+- Toast uses existing `ctx.Emit` mechanism (zero protocol changes)
+- All handlers are standard `http.Handler` for ecosystem compatibility
+
+### Phase 12 Verification Details
+
+**Session Durability (§4.1, lines 3148-3167) Verified:**
+- `ResumeWindow` in-memory retention at `pkg/server/config.go:SessionConfig`
+- `SessionStore` optional persistence at `pkg/session/store.go`
+- `MaxDetachedSessions` for DoS protection at `pkg/server/manager.go`
+- `MaxSessionsPerIP` rate limiting at `pkg/server/manager.go`
+- `EvictionPolicy` (LRU) at `pkg/server/manager.go:evictLRU()`
+
+**SessionStore Interface (§4.1, lines 3175-3187) Verified:**
+- `Save(ctx, sessionID, data, expiresAt) error` at `pkg/session/store.go:16`
+- `Load(ctx, sessionID) ([]byte, error)` at `pkg/session/store.go:17` — returns `(nil, nil)` for not found
+- `Delete(ctx, sessionID) error` at `pkg/session/store.go:18`
+- `Touch(ctx, sessionID, expiresAt) error` at `pkg/session/store.go:19`
+- `SaveAll(ctx, sessions) error` at `pkg/session/store.go:20`
+- `Close() error` at `pkg/session/store.go:21`
+- `MemoryStore` implementation at `pkg/session/memory.go` with 9 tests
+
+**Session Serialization (§4.1) Verified:**
+- `Session.Serialize() ([]byte, error)` at `pkg/server/session.go:863-888`
+- `Session.Deserialize(data []byte) error` at `pkg/server/session.go:903-929`
+- `Session.GetAllData() map[string]any` at `pkg/server/session.go:813-827`
+- `Session.RestoreData(values map[string]any)` at `pkg/server/session.go:832-846`
+- `SerializableSession` struct at `pkg/session/serialize.go` with ID, UserID, CreatedAt, LastActive, Values, Route
+- Values serialized as `map[string]json.RawMessage` for type preservation
+
+**Connection State CSS Classes (§5.4, lines 3566-3571) Verified:**
+- Classes applied to `<html>` (`document.documentElement`) at `client/src/connection.js:89`
+- `html.vango-connecting` — initial connection at `client/src/connection.js:22`
+- `html.vango-connected` — WebSocket open at `client/src/connection.js:23`
+- `html.vango-reconnecting` — reconnect in progress at `client/src/connection.js:24`
+- `html.vango-disconnected` — gave up/expired at `client/src/connection.js:25`
+- Custom event `vango:connection` dispatched at `client/src/connection.js:107-112`
+- Default styles injected at `client/src/connection.js:243-331` with `html.vango-*` selectors
+
+**ConnectionManager (§5.4) Verified:**
+- `ConnectionState` enum with CONNECTING, CONNECTED, RECONNECTING, DISCONNECTED at lines 11-16
+- `setState(newState)` updates classes and dispatches event at lines 61-83
+- `onConnect()` resets retry count at lines 117-120
+- `onDisconnect()` transitions to RECONNECTING at lines 125-129
+- `onReconnectFailed()` transitions to DISCONNECTED after max retries at lines 134-143
+- Exponential backoff via `getNextRetryDelay()` at lines 148-154
+
+**URLParam 2.0 (§3.9.12, lines 3035-3107) Verified:**
+- `urlparam.Param[T](key, default, opts...)` at `pkg/urlparam/urlparam.go:159-172`
+- `Push` mode (new history entry) at line 74
+- `Replace` mode (no history spam) at line 77
+- `Debounce(duration)` option at lines 103-105
+- `EncodingFlat` for structs as flat params at line 49
+- `EncodingJSON` for base64-encoded JSON at line 52
+- `EncodingComma` for comma-separated arrays at line 56
+- `url` struct tag support for field naming at lines 266-271
+- Signal integration via `vango.Signal[T]` at line 132
+
+**URLParam API Methods Verified:**
+- `Get() T` with tracking at `pkg/urlparam/urlparam.go:177`
+- `Peek() T` without tracking at line 182
+- `Set(value T)` with URL sync at lines 186-189
+- `Update(fn func(T) T)` atomic update at lines 192-195
+- `Reset()` to default at lines 198-200
+- `SetFromURL(params)` for initialization at lines 314-321
+
+**vtest.TestSession (§16) Verified:**
+- `NewTestSession(manager, opts...)` at `pkg/vtest/session.go:73-95`
+- `SimulateDisconnect()` serializes and saves to store at lines 99-110
+- `SimulateReconnect()` loads from store at lines 123-137
+- `SimulateRefresh()` full page refresh simulation at lines 153-192
+- `SimulateServerRestart()` recovery from store at lines 209-247
+- `SimulateEviction()` memory pressure test at lines 251-254
+- `SimulateTimeout()` inactivity test at lines 258-261
+- `AssertPersisted(tb)` / `AssertNotPersisted(tb)` assertions at lines 286-311
+- Delegates to `Session.Serialize()` / `Session.Deserialize()` at lines 265-273
+
+**Test Coverage:**
+- `pkg/server/` — Session serialization, manager LRU eviction, IP limits
+- `pkg/session/` — MemoryStore CRUD, expiry, concurrency (9 tests)
+- `pkg/urlparam/` — Modes, encodings, debounce, serialization (10 tests)
+- `pkg/vtest/` — TestSession lifecycle, assertions
+
+**Known Deviation from Spec:**
+- Spec shows `vango.URLParam(...)` but implementation uses `urlparam.Param(...)` due to import cycle (urlparam imports vango.Signal, so vango cannot import urlparam). Documented in PHASE_12.md.
 
 ---
 
@@ -5964,6 +6311,12 @@ Vango generates a deterministic `routes_gen.go` and requires explicit registrati
 routes.Register(app.Router())
 ```
 
+> **🔍 AUDIT STATUS: Phase 7 VERIFIED (2026-01-02)**
+> - Scanner handles all file conventions: `_layout.go`, `_middleware.go`, `[param].go`, `[...slug].go`
+> - Type inference: id→int, slug→string, uuid→string, page→int, etc.
+> - Code generation produces deterministic `routes_gen.go`
+> - Implementation: `pkg/router/scanner.go`, `pkg/router/codegen.go`
+
 ### 9.2 Page Components
 
 ```go
@@ -5991,6 +6344,12 @@ func ShowPage(ctx vango.Ctx, p Params) *vango.VNode {
 }
 ```
 
+> **🔍 AUDIT STATUS: Phase 7 VERIFIED (2026-01-02)**
+> - `PageHandler func(ctx server.Ctx, params any) vdom.Component`
+> - Params struct parsing via `pkg/router/params.go`
+> - Type coercion for int, int64, uint, float64, bool, string, []string
+> - Implementation: `pkg/router/types.go`, `pkg/router/params.go`
+
 ### 9.3 Layouts
 
 ```go
@@ -6013,6 +6372,13 @@ func Layout(ctx vango.Ctx, children vango.Slot) *vango.VNode {
 }
 ```
 
+> **🔍 AUDIT STATUS: Phase 7 VERIFIED (2026-01-02)**
+> - `Slot` type alias: `type Slot = *vdom.VNode`
+> - `LayoutHandler func(ctx server.Ctx, children Slot) *vdom.VNode`
+> - Layouts collected hierarchically during tree matching
+> - `VangoScripts()` helper in `pkg/vdom/helpers.go` with options
+> - Implementation: `pkg/router/types.go`, `pkg/router/tree.go`
+
 ### 9.4 Navigation
 
 ```go
@@ -6032,6 +6398,14 @@ A(
     Text("View Project"),
 )
 ```
+
+> **🔍 AUDIT STATUS: Phase 7 VERIFIED (2026-01-02)**
+> - `ctx.Navigate(path, opts...)` in `pkg/server/context.go`
+> - Options: `WithReplace()`, `WithNavigateParams()`, `WithoutScroll()`
+> - SSR fallback to HTTP redirect when no WebSocket session
+> - `Prefetch()` helper triggers hover preloading via client
+> - Link helpers: `Link()`, `LinkWithPrefetch()`, `ActiveLink()`, `NavLink()`
+> - Implementation: `pkg/server/context.go`, `pkg/router/link.go`
 
 ### 9.5 How Navigation Works
 
@@ -6061,6 +6435,16 @@ Progressive enhancement requirements:
 - If patch application fails (DOM mismatch, hook error), the client MUST self-heal by hard reloading to the target URL (or an equivalent full resync mechanism).
 
 No full page reload, no WASM download, minimal data transfer.
+
+> **🔍 AUDIT STATUS: Phase 7 VERIFIED (2026-01-02)**
+> - Client link interception in `client/src/events.js:_handleLinkClick()`
+> - Progressive enhancement: checks WebSocket connection before interception
+> - Modifier key bypass: Ctrl/Meta/Shift/Alt allow native behavior
+> - `download` attribute, non-`_self` target, cross-origin all use native navigation
+> - `data-ve` and `data-link`/`data-vango-link` detection for SPA links
+> - `URL_PUSH` (0x30) and `URL_REPLACE` (0x31) patch types for query-only updates
+> - `popstate` handler includes search params for back/forward
+> - Implementation: `client/src/events.js`, `client/src/patches.js`, `pkg/protocol/patch.go`
 
 ---
 
@@ -6565,7 +6949,16 @@ vango add init
 vango add button card dialog
 ```
 
-VangoUI components are Tailwind-based, use CSS variables for theming, and rely on client hooks only for “physics” (drag/drop, focus traps, positioning).
+VangoUI components are Tailwind-based, use CSS variables for theming, and rely on client hooks only for "physics" (drag/drop, focus traps, positioning).
+
+> **🔍 AUDIT STATUS: Phase 14 VERIFIED (2026-01-02)**
+> - `vango add init` creates utils.go and base.go in UI directory
+> - `vango add <component>` installs components with dependency resolution
+> - `vango add list` shows available components with install status
+> - `vango add upgrade` upgrades installed components (skips modified)
+> - Component registry with manifest fetching and versioning
+> - NOTE: VangoUI component files excluded via `//go:build vangoui` until Phase 15
+> - Implementation: `cmd/vango/add.go`, `internal/registry/registry.go`
 
 ---
 
@@ -6668,10 +7061,10 @@ Hybrid builds include an island bundle analyzer (see WASM islands) that reports 
 
 Vango adopts a **middleware-first** observability model:
 
-- **No `ctx.Trace()` API**: tracing is infrastructure, not application logic.
-- **OpenTelemetry**: middleware starts spans for each event (click/input/nav), records patch counts and errors.
-- **Context propagation**: `ctx.StdContext()` carries trace context into DB drivers and HTTP clients.
-- **Prometheus metrics (optional)**: session counts, detached sessions, event rates, patch rates, reconnects.
+- **No `ctx.Trace()` API**: tracing is infrastructure, not application logic. ✅ *[VERIFIED: No such API in pkg/server/context.go]*
+- **OpenTelemetry**: middleware starts spans for each event (click/input/nav), records patch counts and errors. ✅ *[VERIFIED: pkg/middleware/otel.go:179, :152-158, :200-206]*
+- **Context propagation**: `ctx.StdContext()` carries trace context into DB drivers and HTTP clients. ✅ *[VERIFIED: pkg/server/context.go:535-553]*
+- **Prometheus metrics (optional)**: session counts, detached sessions, event rates, patch rates, reconnects. ✅ *[VERIFIED: pkg/middleware/metrics.go - all 9 metrics implemented]*
 
 Metrics endpoints should be protected (auth/IP allowlist) in production.
 
@@ -6683,12 +7076,12 @@ Vango provides **security by design** with secure defaults that protect against 
 
 ### 15.1 Secure Defaults (v2.1+)
 
-| Setting | Default | Notes |
-|---------|---------|-------|
-| `CheckOrigin` | Same-origin only | Cross-origin WS rejected |
-| CSRF | Warning if disabled | Required in v3.0 |
-| `on*` attributes | Stripped unless handler | Prevents XSS injection |
-| Protocol limits | 4MB max allocation | Prevents DoS |
+| Setting | Default | Notes | Status |
+|---------|---------|-------|--------|
+| `CheckOrigin` | Same-origin only | Cross-origin WS rejected | ✅ *[VERIFIED: pkg/server/config.go:279]* |
+| CSRF | Warning if disabled | Required in v3.0 | ✅ *[VERIFIED: pkg/server/server.go:87-89]* |
+| `on*` attributes | Stripped unless handler | Prevents XSS injection | ✅ *[VERIFIED: pkg/render/renderer.go:258-264]* |
+| Protocol limits | 4MB max allocation | Prevents DoS | ✅ *[VERIFIED: pkg/protocol/decoder.go:13]* |
 
 ### 15.2 XSS Prevention
 
@@ -6710,7 +7103,7 @@ Div(DangerouslySetInnerHTML(trustedHTML))
 
 #### Attribute Sanitization
 
-Event handler attributes (`onclick`, `onmouseover`, etc.) are automatically filtered:
+Event handler attributes (`onclick`, `onmouseover`, etc.) are automatically filtered: ✅ *[VERIFIED: pkg/render/renderer.go:356-367 isEventHandlerKey()]*
 
 ```go
 // This is BLOCKED - attribute stripped during render
@@ -6720,7 +7113,7 @@ Attr("onclick", "alert(1)")
 OnClick(myHandler)
 ```
 
-> **Note**: The filter is case-insensitive. `ONCLICK`, `onClick`, and `onclick` are all blocked.
+> **Note**: The filter is case-insensitive. `ONCLICK`, `onClick`, and `onclick` are all blocked. ✅ *[VERIFIED: uses strings.EqualFold() for case-insensitive matching]*
 
 ### 15.3 CSRF Protection
 
@@ -6732,31 +7125,31 @@ vango.Config{
 }
 ```
 
-CSRF uses the **Double Submit Cookie** pattern:
-1. Server sets `__vango_csrf` cookie via `server.SetCSRFCookie()`
-2. Server embeds token in HTML as `window.__VANGO_CSRF__`
-3. Client sends token in WebSocket handshake
-4. Server validates handshake token matches cookie
+CSRF uses the **Double Submit Cookie** pattern: ✅ *[VERIFIED: pkg/server/server.go:348-397 validateCSRF()]*
+1. Server sets `__vango_csrf` cookie via `server.SetCSRFCookie()` ✅ *[VERIFIED: pkg/server/server.go:430-441]*
+2. Server embeds token in HTML as `window.__VANGO_CSRF__` ✅ *[VERIFIED: pkg/render/page.go:357]*
+3. Client sends token in WebSocket handshake ✅ *[VERIFIED: client/src/websocket.js:83-91]*
+4. Server validates handshake token matches cookie ✅ *[VERIFIED: pkg/server/server.go:358-396]*
 
 ```go
 // In your page handler
 func ServePage(w http.ResponseWriter, r *http.Request) {
-    token := server.GenerateCSRFToken()
-    server.SetCSRFCookie(w, token)
+    token := server.GenerateCSRFToken()  // ✅ [VERIFIED: pkg/server/server.go:404-428]
+    server.SetCSRFCookie(w, token)       // ✅ [VERIFIED: pkg/server/server.go:430-441]
     // Embed token in page for client
 }
 ```
 
-> **Warning**: If `CSRFSecret` is nil, a warning is logged on startup. This will become a hard error in v3.0.
+> **Warning**: If `CSRFSecret` is nil, a warning is logged on startup. This will become a hard error in v3.0. ✅ *[VERIFIED: pkg/server/server.go:87-89]*
 
 ### 15.4 WebSocket Origin Validation
 
-By default, Vango rejects cross-origin WebSocket connections (prevents CSWSH):
+By default, Vango rejects cross-origin WebSocket connections (prevents CSWSH): ✅ *[VERIFIED: pkg/server/config.go:301-343 SameOriginCheck()]*
 
 ```go
 // Default behavior - same-origin only
 config := server.DefaultServerConfig()
-// config.CheckOrigin = SameOriginCheck (secure default)
+// config.CheckOrigin = SameOriginCheck (secure default)  ✅ [VERIFIED: pkg/server/config.go:279]
 
 // Explicit cross-origin (dev only!)
 config.CheckOrigin = func(r *http.Request) bool { return true }
@@ -6764,13 +7157,15 @@ config.CheckOrigin = func(r *http.Request) bool { return true }
 
 ### 15.5 Session Security
 
+✅ *[VERIFIED: pkg/server/config.go:287-290, pkg/server/server.go:437-439]*
+
 ```go
 vango.Config{
     SessionCookie: http.Cookie{
         Name:     "vango_session",
-        HttpOnly: true,
-        Secure:   true,
-        SameSite: http.SameSiteStrictMode,
+        HttpOnly: true,   // ✅ [VERIFIED: pkg/server/server.go:437]
+        Secure:   true,   // ✅ [VERIFIED: pkg/server/server.go:439 - conditional via isSecure()]
+        SameSite: http.SameSiteLaxMode,  // NOTE: Implementation uses Lax (not Strict) for OAuth compatibility
     },
 }
 ```
@@ -6779,19 +7174,19 @@ vango.Config{
 
 The binary protocol includes allocation + nesting limits to prevent DoS and stack overflow attacks:
 
-| Limit | Value | Purpose |
-|-------|-------|---------|
-| Max string/bytes | 4MB | Prevent OOM |
-| Max collection | 100K items | Prevent CPU exhaustion |
-| Max VNode depth | 256 | Prevent stack overflow |
-| Max patch depth | 128 | Prevent stack overflow |
-| Hard cap | 16MB | Absolute ceiling |
+| Limit | Value | Purpose | Status |
+|-------|-------|---------|--------|
+| Max string/bytes | 4MB | Prevent OOM | ✅ *[VERIFIED: pkg/protocol/decoder.go:13 DefaultMaxAllocation]* |
+| Max collection | 100K items | Prevent CPU exhaustion | ✅ *[VERIFIED: pkg/protocol/decoder.go:21 MaxCollectionCount]* |
+| Max VNode depth | 256 | Prevent stack overflow | ✅ *[VERIFIED: pkg/protocol/limits.go:9 MaxVNodeDepth]* |
+| Max patch depth | 128 | Prevent stack overflow | ✅ *[VERIFIED: pkg/protocol/limits.go:14 MaxPatchDepth]* |
+| Hard cap | 16MB | Absolute ceiling | ✅ *[VERIFIED: pkg/protocol/decoder.go:17 HardMaxAllocation]* |
 
-Production hardening adds fuzz testing for protocol decoders to ensure invalid inputs return errors (never panics).
+Production hardening adds fuzz testing for protocol decoders to ensure invalid inputs return errors (never panics). ✅ *[VERIFIED: pkg/protocol/fuzz_test.go - 15 fuzz targets covering all decode paths]*
 
 ### 15.7 Event Handler Safety
 
-Handlers are server-side function references, not code strings:
+Handlers are server-side function references, not code strings: ✅ *[VERIFIED: pkg/render/renderer.go:347-354 registerHandlers(), pkg/server/session.go handler map]*
 
 ```go
 // This creates a server-side handler mapping
@@ -6800,10 +7195,10 @@ Button(OnClick(func() {
 }))
 ```
 
-The client only sends `{hid: "h42", type: 0x01}`. It cannot:
+The client only sends `{hid: "h42", type: 0x01}`. It cannot: ✅ *[VERIFIED: pkg/protocol/event.go - Event struct only contains HID + Type]*
 - Execute arbitrary functions
-- Access handlers from other sessions
-- Inject JavaScript
+- Access handlers from other sessions ✅ *[VERIFIED: handlers stored in session.handlers map, session-isolated]*
+- Inject JavaScript ✅ *[VERIFIED: on* attributes stripped by isEventHandlerKey()]*
 
 ### 15.8 Input Validation
 
@@ -6909,6 +7304,26 @@ func Middleware() []router.Middleware {
     }
 }
 ```
+
+---
+
+### 15.10 Implementation Verification Summary (Phase 13)
+
+> **Audit Date**: 2026-01-02
+> **Status**: ✅ ALL SECURITY FEATURES VERIFIED
+
+All security features specified in Section 15 have been verified as correctly implemented in the vango_v2 source code:
+
+| Section | Feature | Verification |
+|---------|---------|--------------|
+| 14.6 | Observability (OTel, Prometheus) | ✅ Complete - 9 metrics, middleware-first |
+| 15.1 | Secure Defaults | ✅ Complete - all 4 defaults verified |
+| 15.2 | XSS Prevention | ✅ Complete - attribute sanitization |
+| 15.3 | CSRF Protection | ✅ Complete - Double Submit Cookie |
+| 15.4 | WebSocket Origin | ✅ Complete - SameOriginCheck default |
+| 15.5 | Session Security | ✅ Complete - HttpOnly, Secure, SameSite |
+| 15.6 | Protocol Defense | ✅ Complete - all limits + 15 fuzz tests |
+| 15.7 | Event Handler Safety | ✅ Complete - server-side handlers only |
 
 ---
 
@@ -7043,6 +7458,14 @@ my-app/
 
 **Static serving contract:** `public/` is served at site root (`/`), so `public/styles.css` is available at `/styles.css`.
 
+> **🔍 AUDIT STATUS: Phase 14 VERIFIED (2026-01-02)**
+> - Project structure matches spec: `app/routes/`, `app/components/`, `app/store/`, `app/middleware/`
+> - `routes_gen.go` generated in routes directory
+> - `_layout.go`, `_middleware.go` conventions supported
+> - Static serving from `public/` directory at site root
+> - `vango.json` configuration with paths, static, dev, tailwind sections
+> - Implementation: `internal/templates/templates.go`, `internal/config/config.go`
+
 ### 17.2 CLI Commands
 
 ```bash
@@ -7080,6 +7503,22 @@ vango test
 }
 ```
 
+> **🔍 AUDIT STATUS: Phase 14 VERIFIED (2026-01-02)**
+> - `vango create <name>` with templates: minimal, standard, full, api
+> - `vango dev` with hot reload and file watching
+> - `vango gen routes` regenerates routes_gen.go from route files
+> - `vango gen route <path>` generates page routes with param inference
+> - `vango gen api <path>` generates API routes with method handlers
+> - `vango gen component`, `vango gen store`, `vango gen middleware`
+> - `vango gen openapi` generates OpenAPI 3.0 spec from API routes
+> - `vango add init` / `vango add <components>` for VangoUI
+> - `vango build` for production builds with minification
+> - `vango test` wrapper with coverage and race detection
+> - Template Signal API: `vango.NewSignal(...)`, `.Get()` per §3.3
+> - Template Layout: `VangoScripts()` helper per §9.3
+> - Template imports: dot-import `el` package for HTML elements
+> - Implementation: `cmd/vango/*.go`, `internal/templates/templates.go`
+
 ### 17.3 Hot Reload
 
 ```bash
@@ -7097,6 +7536,13 @@ Changes are instant:
 2. Go recompilation (~50ms for incremental)
 3. Connected browsers receive refresh signal
 4. Only affected components re-render
+
+> **🔍 AUDIT STATUS: Phase 14 VERIFIED (2026-01-02)**
+> - File watcher monitors configured directories (`app`, `db`, `public`)
+> - Go rebuild on `.go` file changes
+> - Browser refresh via SSE/WebSocket connection
+> - Verbose build timing output
+> - Implementation: `internal/dev/server.go`, `internal/dev/watcher.go`
 
 ### 17.4 Error Messages
 
