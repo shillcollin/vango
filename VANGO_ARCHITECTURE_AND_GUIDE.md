@@ -57,7 +57,7 @@ status: RFC
 | **Phase 1: Reactive Core** | Signal, Memo, Effect, Batch, Owner | ✅ **VERIFIED** | 2026-01-02 | 112 tests, 90.9% coverage, race detector passes |
 | **Phase 2: Virtual DOM** | VNode, Diff, Patch, Elements, Events | ✅ **VERIFIED** | 2026-01-02 | 85 tests, 95.1% coverage, race detector passes |
 | **Phase 3: Binary Protocol** | Events, Patches, Wire format | ✅ **VERIFIED** | 2026-01-02 | 85 tests, 12 fuzz targets, benchmarks ~50ns/op |
-| **Phase 4: Server Runtime** | Sessions, Handlers, Context | ✅ **VERIFIED** | 2026-01-02 | 125 tests, 34.2% coverage, full spec compliance |
+| **Phase 4: Server Runtime** | Sessions, Handlers, Context | ✅ **VERIFIED** | 2026-01-03 | Handler registry compound keys, allComponents dirty tracking, hook order validation |
 | **Phase 5: Thin Client** | JavaScript client | ✅ **VERIFIED** | 2026-01-02 | 48 tests, 15.90 KB gzipped, all 7 spec hooks + 4 VangoUI hooks |
 | **Phase 6: SSR & Hydration** | Server-side rendering | ✅ **VERIFIED** | 2026-01-02 | 64 tests, data-ve/JSON optimistic spec compliant |
 | **Phase 7: Routing** | File-based routing, Navigation | ✅ **VERIFIED** | 2026-01-02 | 94 tests, 77.7% coverage, ~53-200ns matching |
@@ -75,6 +75,9 @@ status: RFC
 - `Untracked` for dependency-free reads
 - `Owner` with hierarchical disposal, cleanup ordering (LIFO)
 - Lifecycle hooks: OnMount, OnUnmount, OnUpdate
+- **(2026-01-03)** Hook order tracking: `TrackHook()`, `StartRender()`, `EndRender()` in Owner
+- **(2026-01-03)** Dev-mode validation: `[VANGO E002] Hook order changed...` panic on violation
+- **(2026-01-03)** Core hooks call `TrackHook()`: NewSignal, NewMemo, CreateEffect
 
 **Typed Signal Wrappers Verified:**
 - IntSignal: Inc, Dec, Add, Sub, Mul, Div
@@ -207,6 +210,11 @@ status: RFC
 - Dirty component re-rendering after handler execution
 - Pending effects run after handler completion
 - `dispatchCh` for goroutine-safe dispatch (ctx.Dispatch support)
+- **(2026-01-03)** Handler registry uses compound keys: `HID_eventType` format
+- **(2026-01-03)** Multi-handler support: OnClick + OnMouseEnter on same element
+- **(2026-01-03)** Hook events from `hooks.OnEvent()`: keyed as `HID_hook_eventName`
+- **(2026-01-03)** `allComponents` map tracks ALL mounted components for dirty checking
+- **(2026-01-03)** Components without handlers can be marked dirty and re-render
 
 **Binary Protocol (§4.3) Verified:**
 - Event frame decoding and routing
@@ -839,6 +847,13 @@ func Counter(initial int) vango.Component {
 
 ### 3.1 Core Concepts
 
+> **🔍 AUDIT STATUS: API Facade (2026-01-03)**
+> - `vango.Func()` re-export available at `pkg/vango/exports.go` ✅
+> - Type aliases: `vango.Component`, `vango.VNode`, `vango.VKind`, `vango.Props` ✅
+> - Kind constants: `vango.KindElement`, `vango.KindText`, etc. ✅
+> - **Import pattern**: `import "github.com/vango-dev/vango/v2/pkg/vango"` + `. "github.com/vango-dev/vango/v2/pkg/vdom"`
+> - **Known limitation**: Full API unification deferred due to import cycles (server→vango, urlparam→vango)
+
 Vango has five core concepts:
 
 | Concept | Current Go API | Description |
@@ -860,6 +875,13 @@ Vango has five core concepts:
 Additional first-class primitives: **Resource** (async state) and **Ref** (client-only handles).
 
 ### 3.1.1 Runtime Context (`Ctx`)
+
+> **🔍 AUDIT STATUS: VERIFIED (2026-01-03)**
+> - `vango.UseCtx()` implemented at `pkg/vango/context.go:57` ✅
+> - `vango.Ctx` interface with `Dispatch()` and `StdContext()` ✅
+> - `vango.WithCtx()` sets context for render/handler at `pkg/vango/tracking.go:213` ✅
+> - Context set during `ComponentInstance.Render()` and `handleEvent()` ✅
+> - `SetContext()`/`GetContext()` for component tree values via Owner hierarchy ✅
 
 Many APIs in this guide (navigation, dispatching work back onto the session loop, URL query state, toasts, etc.) require an active **runtime context**.
 
@@ -888,6 +910,19 @@ Normative rules:
 - Prefer `sig.Peek()` / `vango.Untracked` for analytics/logging reads to avoid accidental reactive dependencies.
 
 ### 3.1.3 Hook-Order Semantics for Render-Time Stateful Primitives
+
+> **🔍 AUDIT STATUS: ✅ VERIFIED (2026-01-03)**
+> - Core hooks: `NewSignal`, `NewMemo`, `CreateEffect` call `TrackHook()` ✅
+> - Lifecycle hooks: `OnMount`, `OnUpdate` use `CreateEffect` internally ✅
+> - `StartRender()`/`EndRender()` wired in `ComponentInstance.Render()` ✅
+> - Dev-mode panic: `[VANGO E002] Hook order changed...` on order violation ✅
+> - Feature hooks: `NewResource`, `NewWithKey` call `TrackHook(HookResource)` ✅
+> - Form hook: `UseForm` calls `TrackHook(HookForm)` ✅
+> - URL hook: `urlparam.Param` calls `TrackHook(HookURLParam)` ✅
+> - Ref hook: `NewRef` implemented with `TrackHook(HookRef)` at `pkg/vango/ref.go` ✅
+> - Context hook: `CreateContext.Use()` implemented with `TrackHook(HookContext)` at `pkg/vango/context_api.go` ✅
+> - Public `TrackHook()` exported at `pkg/vango/tracking.go` for external packages ✅
+> - Tests: `owner_test.go` covers first render, re-render validation, panic on mismatch ✅
 
 Any API that allocates component-scoped state during render MUST obey hook-order semantics. This includes: `NewSignal`, `NewMemo`, `Effect`, `NewResource`, `NewResourceKeyed`, `NewRef`, `URLParam`, `UseForm`, `CreateContext.Use()`, and lifecycle hooks (`OnMount`, `OnUnmount`, `OnUpdate`).
 
@@ -3271,6 +3306,14 @@ type SessionStore interface {
 ```
 
 ### 4.2 The Event Loop
+
+> **🔍 AUDIT STATUS: VERIFIED (2026-01-03)**
+> - Handler registry uses compound keys: `HID_eventType` (e.g., `"h1_onclick"`) ✅
+> - Multi-handler support: same element can have OnClick + OnMouseEnter ✅
+> - Hook events from `hooks.OnEvent()`: keyed as `HID_hook_eventName` ✅
+> - Dirty tracking: `allComponents` map tracks ALL mounted components ✅
+> - Components without handlers can still be marked dirty and re-render ✅
+> - Context propagation: `UseCtx()` works in handlers via `WithCtx()` ✅
 
 ```go
 // Simplified server event loop (per session)
