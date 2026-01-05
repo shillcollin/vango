@@ -1,0 +1,8 @@
+{
+    "name": "vango-docs",
+    "version": "0.1.0",
+    "docs": {
+        "dir": "docs/content",
+        "basePath": "/docs"
+    }
+}

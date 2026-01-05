@@ -1,0 +1,219 @@
+package pages
+
+import (
+	"github.com/vango-dev/vango/v2/pkg/server"
+	"github.com/vango-dev/vango/v2/pkg/vango"
+	. "github.com/vango-dev/vango/v2/pkg/vdom"
+)
+
+// HomeComponent returns the homepage as a Vango component with reactive state.
+func HomeComponent() server.Component {
+	return vango.Func(func() *VNode {
+		// Signal for active tab - this is server-side reactive state
+		activeTab := vango.NewSignal("curl")
+
+		return Fragment(
+			// Starry background - fixed on both sides
+			Div(Class("stars-bg")),
+
+			// Fixed navigation
+			Nav(Class("nav"),
+				Div(Class("nav-content"),
+					A(Href("/docs"), Class("nav-link"), "docs"),
+					A(Href("https://github.com/vango-dev/vango"), Target("_blank"), Rel("noopener"), Class("nav-link"), "github"),
+				),
+			),
+
+			// Main scrollable content
+			Main(Class("main-content"),
+				// Hero section
+				Section(Class("hero"),
+					// Logo
+					Div(Class("logo-container"),
+						Raw(vangoLogoSVG),
+					),
+
+					// Tagline
+					P(Class("tagline"), "Full-stack Go Apps."),
+
+					// Description
+					P(Class("description"),
+						"Server-rendered by default, with opt-in client-side interactivity via JS or WASM",
+						Br(),
+						"AI's new favorite framework",
+					),
+				),
+
+				// Divider
+				Div(Class("divider")),
+
+				// Install section with reactive tabs
+				Section(Class("install-section"),
+					InstallTabs(activeTab),
+				),
+
+				// Code example
+				Section(Class("code-section"),
+					CodeExample(),
+				),
+
+				// Features section
+				Section(Class("features-section"),
+					FeaturesGrid(),
+				),
+
+				// Footer
+				Footer(Class("footer"),
+					P("Built with Vango"),
+				),
+			),
+		)
+	})
+}
+
+// InstallTabs renders the installation method tabs with reactive state.
+func InstallTabs(activeTab *vango.Signal[string]) *VNode {
+	current := activeTab.Get()
+
+	return Div(Class("install-tabs"),
+		// Tab headers
+		Div(Class("tab-headers"),
+			Button(
+				Classes(map[string]bool{
+					"tab-header": true,
+					"active":     current == "curl",
+				}),
+				OnClick(func() { activeTab.Set("curl") }),
+				"curl",
+			),
+			Button(
+				Classes(map[string]bool{
+					"tab-header": true,
+					"active":     current == "brew",
+				}),
+				OnClick(func() { activeTab.Set("brew") }),
+				"brew",
+			),
+		),
+
+		// Tab content - shows based on active tab
+		If(current == "curl",
+			Div(Class("tab-content", "active"),
+				Pre(Class("install-code"),
+					Code("curl -fsSL https://vango.dev/install.sh | sh"),
+				),
+			),
+		),
+		If(current == "brew",
+			Div(Class("tab-content", "active"),
+				Pre(Class("install-code"),
+					Code("brew install vango"),
+				),
+			),
+		),
+	)
+}
+
+// CodeExample renders the code example section.
+func CodeExample() *VNode {
+	return Div(Class("code-example"),
+		// Language label
+		Span(Class("code-lang"), "go"),
+
+		// Code block
+		Pre(Class("code-block"),
+			Code(Class("language-go"),
+				Raw(highlightedGoCode),
+			),
+		),
+	)
+}
+
+// FeaturesGrid renders the features section.
+func FeaturesGrid() *VNode {
+	return Div(Class("features-grid"),
+		FeatureCard(
+			"Server-First",
+			"Components run on the server with direct database access. No API layer needed.",
+			serverIconSVG,
+		),
+		FeatureCard(
+			"12KB Client",
+			"Minimal JavaScript footprint. Your app is interactive before heavy bundles would even load.",
+			boltIconSVG,
+		),
+		FeatureCard(
+			"Type-Safe",
+			"Go's compiler catches errors at build time. No runtime surprises.",
+			shieldIconSVG,
+		),
+		FeatureCard(
+			"Real-time",
+			"Binary patches over WebSocket for ~50ms updates. Perfect for collaborative apps.",
+			websocketIconSVG,
+		),
+	)
+}
+
+// FeatureCard renders a single feature card.
+func FeatureCard(title, description, iconSVG string) *VNode {
+	return Div(Class("feature-card"),
+		Div(Class("feature-icon"),
+			Raw(iconSVG),
+		),
+		H3(Class("feature-title"), title),
+		P(Class("feature-desc"), description),
+	)
+}
+
+// SVG and code content constants
+
+const vangoLogoSVG = `<svg class="logo" width="664" height="211" viewBox="0 0 664 211" fill="none" xmlns="http://www.w3.org/2000/svg">
+<path d="M6.25284 51.795C12.5555 45.6203 16.9914 44.1359 29.0757 50.6486C29.7252 48.304 27.7927 46.2216 25.324 42.8325C36.5928 47.9914 43.2866 50.1792 51.2733 61.487C51.2318 57.5454 50.0901 55.4312 46.4794 51.795C48.7064 50.5462 64.531 64.0012 73.6793 95.6696C80.5446 120.439 84.9276 132.451 94.5221 147.569C110.221 124.49 105.294 128.049 122.139 78.4741C129.656 57.6926 151.69 14.7562 167.784 9.06673C159.931 18.1921 155.687 23.9425 148.192 34.4952C154.581 26.9545 156.983 25.2146 161.323 21.9894C146.139 42.5923 139.168 55.5245 131.726 83.0595C140.999 55.8451 148.065 43.9805 162.991 26.9917C157.707 34.5411 155.043 39.2347 150.589 48.0432C171.587 16.4004 182.249 4.92026 198.528 0C187.701 7.85418 183.307 11.9891 178.414 18.9672C182.843 15.3914 185.187 13.8578 188.419 14.3817C184.48 19.4022 182.273 22.2639 178.414 29.9098L175.288 38.1428L188.419 24.4906L187.272 28.9718C192.213 23.5308 194.875 21.1334 199.466 17.8208C195.423 21.9014 192.994 24.8324 188.419 30.9519V34.4952L175.288 54.6088L170.077 69.8242L165.179 83.6848H166.951L155.591 112.969C165.759 89.2581 169.906 74.6715 184.459 54.6088L177.685 72.5338C183.344 61.9907 186.772 56.4254 193.108 46.7926C186.504 58.9551 183.146 65.8923 177.685 78.4741C159.835 132.537 140.328 170.05 113.489 201.448C96.2725 214.402 86.3653 214.533 68.1559 199.676C50.5971 174.381 42.6606 159.742 32.619 132.666C21.3505 96.5602 14.3425 79.9839 0 58.7774C5.56408 57.0824 8.58262 56.6833 13.8605 57.5268C14.4767 54.5918 12.2261 53.4488 6.25284 51.795Z" fill="#F7C558"/>
+<path d="M31.0166 99.734C46.3037 140.632 67.8869 184.792 94.9865 147.569C110.685 124.49 105.758 128.049 122.603 78.4741C130.12 57.6926 152.154 14.7562 168.249 9.06673C160.396 18.1921 156.152 23.9425 148.657 34.4952C155.046 26.9545 157.447 25.2146 161.788 21.9894C146.603 42.5923 139.633 55.5245 132.191 83.0595C141.464 55.8451 148.529 43.9805 163.455 26.9917C158.171 34.5411 155.507 39.2347 151.054 48.0432C172.051 16.4004 182.714 4.92026 198.992 0C188.165 7.85418 183.771 11.9891 178.879 18.9672C183.307 15.3914 185.651 13.8578 188.883 14.3817C184.945 19.4022 182.738 22.2639 178.879 29.9098L175.752 38.1428L188.883 24.4906L187.737 28.9718C192.677 23.5308 195.34 21.1334 199.93 17.8208C195.888 21.9014 193.459 24.8324 188.883 30.9519V34.4952L175.752 54.6088L170.542 69.8242L165.644 83.6848H167.415L156.056 112.969C166.224 89.2581 170.37 74.6715 184.923 54.6088L178.149 72.5338C183.809 61.9907 187.236 56.4254 193.573 46.7926C186.969 58.9551 183.61 65.8923 178.149 78.4741C160.299 132.537 140.792 170.05 113.953 201.448C97.1572 214.085 87.3177 214.519 69.9392 200.738C69.0612 200.041 68.2712 199.265 67.5838 198.38C46.0904 170.709 27.764 98.7349 31.0166 99.734Z" fill="#F4AA2E"/>
+<path d="M143.086 142.775L134.436 158.511C133.302 154.439 132.557 152.645 129.747 156.114C123.539 167.182 119.189 173.073 107.862 182.272H99.9414C109.557 171.722 116.659 157.091 120.576 144.025L119.013 144.442C117.348 149.388 110.601 160.039 107.445 164.243C107.615 160.651 107.525 159.186 106.715 158.511C108.776 155.384 109.649 153.39 110.884 149.549C113.509 141.166 113.14 140.193 107.862 147.777C116.846 120.991 122.266 107.26 132.02 83.0596C141.293 55.8451 148.358 43.9805 163.284 26.9917C158 34.5411 155.336 39.2347 150.883 48.0432C171.88 16.4004 182.542 4.92026 198.821 0C187.994 7.85418 183.6 11.9891 178.708 18.9672C183.136 15.3914 185.48 13.8578 188.712 14.3817C184.773 19.4022 182.567 22.2639 178.708 29.9098C164.213 67.5341 161.904 77.0504 163.284 83.0596L165.472 83.6848H167.244C161.132 106.156 156.288 119.014 143.086 142.775Z" fill="#F19728"/>
+<path d="M51.1699 62.0078C51.1699 62.0078 72.389 92.4387 76.1813 106.091C79.9735 119.743 84.9446 129.824 92.0202 143.296C91.0822 147.047 87.9542 144.546 86.7052 141.524C85.4563 138.502 58.7759 75.8684 51.1699 62.0078Z" fill="#F4AA2E"/>
+<path d="M10.4219 48.3087C26.2883 40.0233 37.9218 56.4688 61.4867 107.607C70.866 130.638 68.469 137.621 54.6086 107.607C36.0277 62.1856 26.1915 46.4627 10.4219 48.3087Z" fill="#F3DB79"/>
+<path d="M213.952 82.4414L265.749 195H246.906L230.139 158.311H182.907L165.559 195H156.262L209.304 82.4414H213.952ZM186.145 151.172H226.735L206.73 107.593L186.145 151.172ZM281.105 84.9316H291.481L363.615 165.449H364.445V84.9316H372.58V197.573H368.264L290.153 108.091H289.489V195H281.105V84.9316ZM465.051 90.3271C458.41 90.3271 452.268 91.5169 446.623 93.8965C441.034 96.2207 436.192 99.5964 432.097 104.023C428.057 108.395 424.903 113.708 422.634 119.961C420.365 126.159 419.23 133.104 419.23 140.796C419.23 148.543 420.448 155.544 422.883 161.797C425.373 167.995 428.749 173.28 433.01 177.651C437.326 182.023 442.39 185.399 448.2 187.778C454.011 190.103 460.236 191.265 466.877 191.265C471.691 191.265 476.035 190.628 479.909 189.355C483.783 188.027 487.269 186.146 490.368 183.711V145.112H469.533V138.555H508.879V186.948C505.669 188.664 502.432 190.186 499.167 191.514C495.902 192.842 492.36 193.949 488.542 194.834C484.779 195.719 480.629 196.383 476.091 196.826C471.553 197.324 466.407 197.573 460.651 197.573C454.564 197.573 448.781 196.882 443.303 195.498C437.824 194.17 432.733 192.261 428.029 189.771C423.381 187.28 419.175 184.32 415.412 180.889C411.649 177.402 408.439 173.556 405.783 169.351C403.182 165.145 401.162 160.635 399.724 155.82C398.285 151.006 397.565 145.998 397.565 140.796C397.565 135.649 398.229 130.641 399.558 125.771C400.941 120.846 402.906 116.226 405.451 111.909C407.997 107.537 411.096 103.553 414.748 99.9561C418.4 96.359 422.523 93.2601 427.116 90.6592C431.709 88.0583 436.717 86.0384 442.141 84.5996C447.564 83.1608 453.319 82.4414 459.406 82.4414C465.217 82.4414 470.585 83.2438 475.51 84.8486C480.49 86.3981 485 88.4733 489.04 91.0742C493.135 93.6751 496.76 96.6911 499.914 100.122C503.068 103.498 505.78 107.039 508.049 110.747L500.08 116.06C495.432 107.15 490.257 100.648 484.558 96.5527C478.913 92.4023 472.411 90.3271 465.051 90.3271ZM592.883 197.573C584.361 197.573 576.392 196.051 568.977 193.008C561.617 189.964 555.197 185.814 549.719 180.557C544.296 175.244 540.007 169.074 536.853 162.046C533.754 154.963 532.204 147.409 532.204 139.385C532.204 134.128 532.896 129.064 534.279 124.194C535.718 119.325 537.738 114.787 540.339 110.581C542.94 106.375 546.066 102.557 549.719 99.126C553.426 95.6396 557.521 92.679 562.004 90.2441C566.486 87.7539 571.328 85.8447 576.53 84.5166C581.732 83.1331 587.183 82.4414 592.883 82.4414C598.583 82.4414 604.034 83.1331 609.235 84.5166C614.437 85.8447 619.279 87.7539 623.762 90.2441C628.299 92.679 632.395 95.6396 636.047 99.126C639.699 102.557 642.826 106.375 645.427 110.581C648.083 114.787 650.103 119.325 651.486 124.194C652.925 129.064 653.645 134.128 653.645 139.385C653.645 144.697 652.925 149.844 651.486 154.824C650.103 159.749 648.083 164.37 645.427 168.687C642.826 173.003 639.699 176.932 636.047 180.474C632.395 184.015 628.299 187.059 623.762 189.604C619.279 192.15 614.437 194.115 609.235 195.498C604.034 196.882 598.583 197.573 592.883 197.573ZM592.883 192.095C599.191 192.095 604.753 190.794 609.567 188.193C614.437 185.537 618.532 181.857 621.853 177.153C625.173 172.45 627.663 166.888 629.323 160.469C631.039 154.049 631.896 147.021 631.896 139.385C631.896 131.803 631.039 124.858 629.323 118.55C627.663 112.241 625.173 106.818 621.853 102.28C618.532 97.6872 614.437 94.1455 609.567 91.6553C604.753 89.1097 599.191 87.8369 592.883 87.8369C586.464 87.8369 580.819 89.1097 575.949 91.6553C571.135 94.1455 567.067 97.6872 563.747 102.28C560.482 106.818 558.02 112.241 556.359 118.55C554.699 124.858 553.869 131.803 553.869 139.385C553.869 147.021 554.699 154.049 556.359 160.469C558.02 166.888 560.482 172.45 563.747 177.153C567.067 181.857 571.135 185.537 575.949 188.193C580.819 190.794 586.464 192.095 592.883 192.095Z" fill="#FAB429"/>
+</svg>`
+
+const serverIconSVG = `<svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+<rect x="2" y="2" width="20" height="8" rx="2" ry="2"></rect>
+<rect x="2" y="14" width="20" height="8" rx="2" ry="2"></rect>
+<line x1="6" y1="6" x2="6.01" y2="6"></line>
+<line x1="6" y1="18" x2="6.01" y2="18"></line>
+</svg>`
+
+const boltIconSVG = `<svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+<polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"></polygon>
+</svg>`
+
+const shieldIconSVG = `<svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+<path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"></path>
+<polyline points="9 12 12 15 16 10"></polyline>
+</svg>`
+
+const websocketIconSVG = `<svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+<path d="M5 12h14"></path>
+<path d="M12 5l7 7-7 7"></path>
+<circle cx="5" cy="12" r="2"></circle>
+<circle cx="19" cy="12" r="2"></circle>
+</svg>`
+
+const highlightedGoCode = `<span class="keyword">func</span> <span class="function">Dashboard</span>(<span class="param">userID</span> <span class="type">int</span>) <span class="type">vango.Component</span> {
+    <span class="comment">// Load data directly - no API needed</span>
+    <span class="param">stats</span>, _ := <span class="function">LoadStats</span>(<span class="param">userID</span>)
+
+    <span class="keyword">return</span> <span class="function">Func</span>(<span class="keyword">func</span>() *<span class="type">vango.VNode</span> {
+        <span class="param">count</span> := <span class="function">NewSignal</span>(<span class="number">0</span>)
+
+        <span class="keyword">return</span> <span class="function">Div</span>(<span class="function">Class</span>(<span class="string">"dashboard"</span>),
+            <span class="function">H1</span>(<span class="function">Textf</span>(<span class="string">"Welcome, %s"</span>, <span class="param">stats</span>.Name)),
+            <span class="function">P</span>(<span class="function">Textf</span>(<span class="string">"Count: %d"</span>, <span class="param">count</span>.<span class="function">Get</span>())),
+            <span class="function">Button</span>(
+                <span class="function">OnClick</span>(<span class="param">count</span>.Inc),
+                <span class="function">Text</span>(<span class="string">"+"</span>),
+            ),
+        )
+    })
+}`

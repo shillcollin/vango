@@ -62,8 +62,8 @@ status: RFC
 | **Phase 6: SSR & Hydration** | Server-side rendering | ✅ **VERIFIED** | 2026-01-02 | 64 tests, data-ve/JSON optimistic spec compliant |
 | **Phase 7: Routing** | File-based routing, Navigation | ✅ **VERIFIED** | 2026-01-02 | 94 tests, 77.7% coverage, ~53-200ns matching |
 | **Phase 10: Middleware & Auth** | HTTP Handler, Context Bridge, Auth, Toast | ✅ **VERIFIED** | 2026-01-02 | Dual-layer architecture, type-safe generics, ctx.Emit |
-| **Phase 12: Session Resilience** | SessionStore, Reconnection UX, URLParam 2.0 | ✅ **VERIFIED** | 2026-01-02 | All tests pass, CSS classes on `<html>`, Session.Serialize/Deserialize |
-| Phase 8+: Features | Forms, Resources, Hooks, etc. | ⏳ Pending | | |
+| **Phase 12: Session Resilience** | SessionStore, Reconnection UX, URLParam 2.0 | ✅ **VERIFIED** | 2026-01-04 | All tests pass, CSS classes on `<html>`, Session.Serialize/Deserialize, Session.Resume + RebuildHandlers + SendResyncFull |
+| **Phase 8: Higher-Level Features** | Resource, Form, URLParam wiring, SharedSignal | ✅ **VERIFIED** | 2026-01-03 | Hook slots, ctx.Dispatch, consume-once hydration, handler composition |
 
 ### Phase 1 Verification Details
 
@@ -618,6 +618,28 @@ status: RFC
 - `onReconnectFailed()` transitions to DISCONNECTED after max retries at lines 134-143
 - Exponential backoff via `getNextRetryDelay()` at lines 148-154
 
+**Session Resume Implementation (§4.1, 2026-01-04) Verified:**
+- Resume path enabled in `pkg/server/server.go:254-322` (removed `if false` guard)
+- `Session.Resume(conn, lastSeq)` at `pkg/server/websocket.go:241-282`
+  - Swaps WebSocket connection
+  - Reinitializes channels if done channel was closed
+  - Resets sequence numbers (`sendSeq=0`, `recvSeq=lastSeq`)
+- `Session.NeedsRestart()` at `pkg/server/websocket.go:284-295`
+- `Session.RebuildHandlers()` at `pkg/server/session.go:582-600` (soft remount)
+  - Preserves owner and signals (state retained)
+  - Clears handlers and component maps
+  - Resets HID generator to match SSR sequence
+  - Re-renders existing component instances
+  - Collects handlers with fresh HIDs
+- `Session.SendResyncFull()` at `pkg/server/session.go:653-689`
+  - Sends full HTML tree via `ControlResyncFull (0x12)` protocol message
+- `SessionManager.ResumeWindow()` at `pkg/server/manager.go:632-637`
+- `restoreSessionFromPersistence()` fully initializes session at `pkg/server/manager.go:560-620`
+- Client `ResyncFull` handler at `client/src/index.js:222-224, 246-277`
+  - Replaces body content, rebuilds node map, reinitializes hooks
+- Renderer preserves existing HIDs at `pkg/render/renderer.go:122-138`
+- Metrics: `RecordResume()`, `RecordResumeFailed()`, `RecordEviction()` at `pkg/middleware/metrics.go:385-403`
+
 **URLParam 2.0 (§3.9.12, lines 3035-3107) Verified:**
 - `urlparam.Param[T](key, default, opts...)` at `pkg/urlparam/urlparam.go:159-172`
 - `Push` mode (new history entry) at line 74
@@ -656,6 +678,50 @@ status: RFC
 
 **Known Deviation from Spec:**
 - Spec shows `vango.URLParam(...)` but implementation uses `urlparam.Param(...)` due to import cycle (urlparam imports vango.Signal, so vango cannot import urlparam). Documented in PHASE_12.md.
+
+### Phase 8 Verification Details (Higher-Level Features E2E)
+
+**(2026-01-03)** Phase 8 verifies that higher-level features work end-to-end in server-driven mode.
+
+**Hook Slot Mechanism (§3.1.3) Verified:**
+- Hook slots provide stable identity across re-renders at `pkg/vango/owner.go:hookSlots`
+- `UseHookSlot()` returns existing instance on subsequent renders at `pkg/vango/tracking.go:256`
+- `SetHookSlot(value)` stores new instance on first render at `pkg/vango/tracking.go:267`
+- Slot index reset on `StartRender()` at `pkg/vango/owner.go:StartRender()`
+
+**SharedSignal/SessionStore Wiring (§7.3) Verified:**
+- `store.SessionKey` context key at `pkg/features/store/store.go`
+- `store.NewSessionStore()` initialized in `newSession()` at `pkg/server/session.go`
+- Session-scoped shared signals now work without manual context setup
+
+**URLParam 2.0 Wiring (§3.9.12) Verified:**
+- Hook slots for stable identity at `pkg/urlparam/urlparam.go:170-174`
+- Consume-once hydration via `InitialURLState.Consume()` at `pkg/urlparam/navigator.go:29-34`
+- No signal writes during render (initial value computed before signal creation) at lines 184-195
+- Navigator queues patches via `session.queueURLPatch()` at `pkg/server/session.go`
+- URL patches sent with DOM patches in `renderDirty()` at `pkg/server/session.go:sendPatchesWithURL()`
+- `SetInitialURL(path, params)` for client handshake at `pkg/server/session.go`
+
+**Resource Session Loop Safety (§3.9.7) Verified:**
+- Hook slots for stable identity at `pkg/features/resource/resource.go:58-62`
+- Initial fetch via `CreateEffect` (not during render) at lines 80-85
+- `ctx.Dispatch()` for ALL signal writes from goroutines at `Refetch()` lines 205-271
+- Loading state set via Dispatch (even though caller may be on session goroutine) at lines 205-214
+- Stale result protection via `fetchID` counter at lines 200-203, 228-233, 243-249
+
+**Form Binding & Array Correctness (§11.1) Verified:**
+- `cloneVNode()` prevents original node mutation at `pkg/features/form/form.go:359-372`
+- Handler signature `func(string)` for oninput at line 405
+- Handler composition (chains with existing, doesn't override) at lines 405-418, 422-435
+- `onblur` validates field and marks touched at lines 421-435
+- `FormArrayItem.Remove()` now calls `RemoveAt()` at `pkg/features/form/array.go:37-45`
+- `formArrayGetter` interface includes `RemoveAt(field, index)` at line 24
+
+**Test Coverage:**
+- All 35 packages pass tests
+- Hook slot tests at `pkg/vango/owner_test.go`
+- Resource tests verify dispatch behavior
+- Form tests verify clone behavior and handler composition
 
 ---
 
@@ -3255,6 +3321,14 @@ type Session struct {
 6. Resume window expires (session evicted; subsequent reconnect starts fresh)
 ```
 
+> **🔍 AUDIT STATUS: VERIFIED (2026-01-04)**
+> - Step 1: WebSocket handshake with resume at `pkg/server/server.go:254-322` ✅
+> - Step 2: Initial render via `session.Mount()` ✅
+> - Step 3: Interaction loop via `websocket.go:EventLoop()` ✅
+> - Step 4: Disconnect sets `closed` flag, session retained in manager ✅
+> - Step 5: Resume via `Session.Resume()` + `RebuildHandlers()` + `SendResyncFull()` ✅
+> - Step 6: Resume window validation at `server.go:277-288`, closes expired sessions ✅
+
 #### Session States (v2.1+)
 
 Vango explicitly models session state to support refreshes and flaky networks:
@@ -3262,6 +3336,11 @@ Vango explicitly models session state to support refreshes and flaky networks:
 - **Connected**: WebSocket is active.
 - **Detached**: WebSocket dropped, but state is retained for `ResumeWindow`.
 - **Expired**: Session is evicted (or cannot be restored from store).
+
+> **🔍 AUDIT STATUS: VERIFIED (2026-01-04)**
+> - Connected: `session.closed.Load() == false` with active WebSocket ✅
+> - Detached: `session.closed.Load() == true`, session remains in `sessions.active` map ✅
+> - Expired: Session removed from manager when `time.Since(LastActive) > ResumeWindow()` ✅
 
 #### Session Durability (v2.1+)
 
@@ -3286,6 +3365,13 @@ app := vango.New(vango.Config{
 })
 ```
 
+> **🔍 AUDIT STATUS: VERIFIED (2026-01-04)**
+> - ResumeWindow: `manager.go:ResumeWindow()` returns configured duration (default 5min) ✅
+> - SessionStore: `server.go:268-274` checks `HasPersistence()`, calls `OnSessionReconnect()` ✅
+> - MaxDetachedSessions: `manager.go` with LRU eviction ✅
+> - MaxSessionsPerIP: `manager.go` rate limiting ✅
+> - Soft remount preserves signal state: `Session.RebuildHandlers()` keeps owner alive ✅
+
 #### What Gets Persisted
 
 Session serialization persists **signal values** (and other session values) that are JSON-serializable. Use `vango.Transient()` for ephemeral state and `vango.PersistKey(...)` when you need stable keys across deployments (see Signals).
@@ -3304,6 +3390,15 @@ type SessionStore interface {
     Close() error
 }
 ```
+
+> **🔍 AUDIT STATUS: VERIFIED (2026-01-04)**
+> - `Save()` at `pkg/session/store.go:14` ✅
+> - `Load()` returns `(nil, nil)` for not found at `pkg/session/store.go:20` ✅
+> - `Delete()` at `pkg/session/store.go:24` ✅
+> - `Touch()` at `pkg/session/store.go:29` ✅
+> - `SaveAll()` at `pkg/session/store.go:34` ✅
+> - `Close()` at `pkg/session/store.go:38` ✅
+> - `MemoryStore` implementation at `pkg/session/memory.go` with 9 tests ✅
 
 ### 4.2 The Event Loop
 
@@ -3719,6 +3814,17 @@ setState(state) {
 // On reconnect within ResumeWindow, the server resumes the session and re-syncs UI.
 // If resume fails (expired/evicted), the client performs a hard reload to recover.
 ```
+
+> **🔍 AUDIT STATUS: VERIFIED (2026-01-04)**
+> - CSS classes on `<html>` at `client/src/connection.js:88-100` ✅
+> - `html.vango-connecting` at `connection.js:22` ✅
+> - `html.vango-connected` at `connection.js:23` ✅
+> - `html.vango-reconnecting` at `connection.js:24` ✅
+> - `html.vango-disconnected` at `connection.js:25` ✅
+> - Custom event `vango:connection` dispatched at `connection.js:106-112` ✅
+> - Exponential backoff at `connection.js:148-154` ✅
+> - Server resume with re-sync: `Session.Resume()` + `RebuildHandlers()` + `SendResyncFull()` ✅
+> - Client handles `ResyncFull (0x12)` at `index.js:222-224, 246-277` ✅
 
 ---
 
